@@ -4,6 +4,7 @@ import re
 import json
 import os
 import datetime
+from email.utils import parsedate_to_datetime
 
 GMAIL_ADDRESS = os.environ['GMAIL_ADDRESS']
 GMAIL_APP_PASSWORD = os.environ['GMAIL_APP_PASSWORD']
@@ -23,10 +24,10 @@ def fetch_emails():
     mail = imaplib.IMAP4_SSL('imap.gmail.com')
     mail.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
     mail.select('inbox')
-    # Search last 60 days
     since = (datetime.date.today() - datetime.timedelta(days=60)).strftime('%d-%b-%Y')
-    status, data = mail.search(None, f'(FROM "evans.no.reply@gmail.com" SUBJECT "Latest prices from Evans Oil Company" SINCE {since})')
+    status, data = mail.search(None, '(FROM "evans.no.reply@gmail.com" SUBJECT "Latest prices from Evans Oil Company" SINCE ' + since + ')')
     ids = data[0].split()
+    print(f"Found {len(ids)} emails")
     emails = []
     for eid in ids:
         _, msg_data = mail.fetch(eid, '(RFC822)')
@@ -38,14 +39,6 @@ def fetch_emails():
 
 def parse_date(msg):
     date_str = msg['Date']
-    for fmt in ['%a, %d %b %Y %H:%M:%S %z', '%a, %d %b %Y %H:%M:%S %Z']:
-        try:
-            dt = datetime.datetime.strptime(date_str.strip(), fmt)
-            return dt.date()
-        except ValueError:
-            pass
-    # fallback: try parsing with email.utils
-    from email.utils import parsedate_to_datetime
     try:
         return parsedate_to_datetime(date_str).date()
     except Exception:
@@ -76,11 +69,10 @@ def parse_prices(body):
 
     prices = {}
     for product, key in PRODUCT_MAP.items():
-        # Match: ProductName, unitprice, tax, freight, total
         pattern = re.escape(product) + r'[,\s]+([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)'
         m = re.search(pattern, body)
         if m:
-            prices[key] = float(m.group(4))  # total price
+            prices[key] = float(m.group(4))
     return store_name, prices
 
 def load_existing():
@@ -97,32 +89,22 @@ def update_index_html(all_prices):
     with open('index.html', 'r') as f:
         html = f.read()
 
-    # Build the JS data object
-    js_lines = ['var D={']
-    for date_str in sorted(all_prices.keys()):
-        stores = all_prices[date_str]
-        store_parts = []
-        for sk, pdata in stores.items():
-            prod_parts = [f'{pk}:{pv}' for pk, pv in pdata.items()]
-            store_parts.append('{' + ','.join(prod_parts) + '}')
-        js_lines.append(f'  "{date_str}":{{{",".join([f"{sk}:{{{",".join([f\"{pk}\":{pv} for pk,pv in stores[sk].items()])}}}" for sk in stores])}}},')
-    js_lines.append('};')
-
-    # Build proper JS
     entries = []
     for date_str in sorted(all_prices.keys()):
         stores = all_prices[date_str]
         store_entries = []
         for sk, pdata in stores.items():
-            prod_entries = [f'"{pk}":{pv}' for pk, pv in pdata.items()]
-            store_entries.append(f'"{sk}":{{{",".join(prod_entries)}}}')
-        entries.append(f'"{date_str}":{{{",".join(store_entries)}}}')
+            prod_entries = []
+            for pk, pv in pdata.items():
+                prod_entries.append('"' + pk + '":' + str(pv))
+            store_entries.append('"' + sk + '":{' + ','.join(prod_entries) + '}')
+        entries.append('"' + date_str + '":{' + ','.join(store_entries) + '}')
     new_data = 'var D={' + ','.join(entries) + '};'
 
-    # Replace existing var D={...}; in the HTML
     html_new = re.sub(r'var D=\{[^;]*\};', new_data, html, flags=re.DOTALL)
     with open('index.html', 'w') as f:
         f.write(html_new)
+    print("Updated index.html")
 
 def main():
     all_prices = load_existing()
@@ -135,15 +117,17 @@ def main():
         body = get_body(msg)
         store_name, prices = parse_prices(body)
         if not store_name or not prices:
+            print(f"  Skipped {date_str}: no store/prices found")
             continue
         store_key = STORE_MAP[store_name]
         if date_str not in all_prices:
             all_prices[date_str] = {}
         all_prices[date_str][store_key] = prices
+        print(f"  Added {date_str} {store_name}: {prices}")
 
     save_prices(all_prices)
     update_index_html(all_prices)
-    print(f"Updated {len(all_prices)} date entries.")
+    print(f"Done. Total date entries: {len(all_prices)}")
 
 if __name__ == '__main__':
     main()
