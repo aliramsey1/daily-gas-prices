@@ -220,7 +220,7 @@ function renderCalendar(){
         var sl=document.createElement('div');sl.className='store-label '+sk;sl.textContent=sk.toUpperCase();en.appendChild(sl);
         [['reg','Reg'],['sup','Sup'],['die','Dsl']].forEach(function(pr){
           var r=document.createElement('div');r.className='price-row';
-          r.innerHTML='<span>'+pr[1]+'</span><span>$'+sp[pr[0]].toFixed(3)+'</span>';en.appendChild(r);
+          r.innerHTML='<span>'+pr[1]+'</span><span>$'+(sp[pr[0]]||0).toFixed(3)+'</span>';en.appendChild(r);
         });c.appendChild(en);
       });
       if(isW){var wn=document.createElement('div');wn.className='weekend-note';wn.textContent='(Fri rates)';c.appendChild(wn);}
@@ -240,7 +240,7 @@ function renderSummary(){
     for(var dd=1;dd<=dim;dd++){
       var dw=new Date(CY,CM,dd).getDay();if(dw===0||dw===6)continue;
       var ds=CY+'-'+String(CM+1).padStart(2,'0')+'-'+String(dd).padStart(2,'0');
-      var pr=D[ds];if(pr)sts.forEach(function(k){if(pr[k])vals.push(pr[k][tp[0]]);});
+      var pr=D[ds];if(pr)sts.forEach(function(k){if(pr[k]&&pr[k][tp[0]]!==undefined)vals.push(pr[k][tp[0]]);});
     }
     var card=document.createElement('div');card.className='summary-card';
     if(!vals.length){card.innerHTML='<h3>'+tp[1]+'</h3><p class="no-data">No data this month</p>';}
