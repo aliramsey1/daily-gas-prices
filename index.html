@@ -33,6 +33,16 @@ header p { color: #888; font-size: 0.9rem; }
 .store-btn.ib.active { background: #a29bfe; color: #1a1a2e; }
 .store-btn.bs { color: #55efc4; border-color: #55efc4; }
 .store-btn.bs.active { background: #55efc4; color: #1a1a2e; }
+.store-btn.cs { color: #fd79a8; border-color: #fd79a8; }
+.store-btn.cs.active { background: #fd79a8; color: #1a1a2e; }
+.store-btn.co { color: #fdcb6e; border-color: #fdcb6e; }
+.store-btn.co.active { background: #fdcb6e; color: #1a1a2e; }
+.store-btn.ss { color: #6c5ce7; border-color: #6c5ce7; }
+.store-btn.ss.active { background: #6c5ce7; color: #fff; }
+.rack-selector { display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; margin: 8px 0 16px; }
+.rack-btn { padding: 6px 16px; border-radius: 16px; border: 1px solid #e17055; cursor: pointer; font-weight: 500; font-size: 0.8rem; background: transparent; color: #e17055; }
+.rack-btn.active { background: #e17055; color: #fff; }
+.jobber-label { text-align: center; font-size: 0.7rem; color: #888; margin: 8px 0 2px; letter-spacing: 0.08em; text-transform: uppercase; }
 .month-nav { display: flex; align-items: center; justify-content: center; gap: 20px; margin: 10px 0 20px; }
 .month-nav button { background: #16213e; border: 1px solid #0f3460; color: #e0e0e0; padding: 8px 16px; border-radius: 8px; cursor: pointer; font-size: 1.1rem; }
 .month-nav h2 { font-size: 1.3rem; color: #e0e0e0; min-width: 180px; text-align: center; }
@@ -84,6 +94,17 @@ header p { color: #888; font-size: 0.9rem; }
     <button class="store-btn mb active" onclick="toggleStore('mb',this)">Moss Bluff Chevron</button>
     <button class="store-btn ib active" onclick="toggleStore('ib',this)">Iberia Stores</button>
     <button class="store-btn bs active" onclick="toggleStore('bs',this)">Bayou Stores</button>
+  </div>
+  <div class="jobber-label">── Lavigne Oil ──</div>
+  <div class="store-selector">
+    <button class="store-btn cs" onclick="toggleStore('cs',this)">Complete Stop</button>
+    <button class="store-btn co" onclick="toggleStore('co',this)">Congress One Stop</button>
+    <button class="store-btn ss" onclick="toggleStore('ss',this)">Star Stores</button>
+  </div>
+  <div class="rack-selector" id="rackSelector" style="display:none">
+    <span style="color:#888;font-size:0.8rem;align-self:center">Rack:</span>
+    <button class="rack-btn active" onclick="setRack('op',this)">Chevron Opelousas</button>
+    <button class="rack-btn" onclick="setRack('br',this)">Chevron BR</button>
   </div>
   <div class="month-nav">
     <button onclick="changeMonth(-1)">&larr;</button>
@@ -164,8 +185,13 @@ var D={
 "2026-04-24":{"am":{"reg":3.44006,"sup":3.82406,"die":4.45707},"ae":{"reg":3.44471,"sup":3.82871,"die":4.46243},"mb":{"reg":3.48231,"sup":3.86631,"die":4.50522},"ib":{"reg":3.469,"sup":3.841,"die":4.46469}},
 "2026-04-25":{"am":{"reg":3.45086,"sup":3.83936,"die":4.38617},"ae":{"reg":3.45551,"sup":3.84401,"die":4.39153},"mb":{"reg":3.49311,"sup":3.88161,"die":4.43432},"ib":{"reg":3.47983,"sup":3.85633,"die":4.39379}}
 };
-var AS={ae:true,am:true,mb:true,ib:true,bs:true};
-function toggleStore(k,b){AS[k]=!AS[k];b.classList.toggle('active',AS[k]);renderCalendar();}
+var AS={ae:true,am:true,mb:true,ib:true,bs:true,cs:false,co:false,ss:false};
+var CK='op';;
+function toggleStore(k,b){AS[k]=!AS[k];b.classList.toggle('active',AS[k]);showRackSelector();renderCalendar();}
+function setRack(r,b){CK=r;document.querySelectorAll('.rack-btn').forEach(function(x){x.classList.remove('active');});b.classList.add('active');renderCalendar();}
+function isLavigneStore(k){return k==='cs'||k==='co'||k==='ss';}
+function showRackSelector(){var anyLav=AS.cs||AS.co||AS.ss;document.getElementById('rackSelector').style.display=anyLav?'flex':'none';}
+
 var CY=new Date().getFullYear(),CM=new Date().getMonth();
 var MN2=['January','February','March','April','May','June','July','August','September','October','November','December'];
 function changeMonth(d){CM+=d;if(CM>11){CM=0;CY++;}if(CM<0){CM=11;CY--;}renderCalendar();}
@@ -181,10 +207,10 @@ function renderCalendar(){
     var isT=td.getFullYear()===CY&&td.getMonth()===CM&&td.getDate()===d;
     var c=document.createElement('div');c.className='day-cell'+(isW?' weekend':'')+(isT?' today':'');
     var dn=document.createElement('div');dn.className='day-num';dn.textContent=d;c.appendChild(dn);
-    var p=D[ds],aA=AS.ae||AS.am||AS.mb||AS.ib||AS.bs;
+    var p=D[ds],aA=AS.ae||AS.am||AS.mb||AS.ib||AS.bs||AS.cs||AS.co||AS.ss;
     if(p&&aA){
-      ['ae','am','mb','ib','bs'].filter(function(k){return AS[k];}).forEach(function(sk){
-        var sp=p[sk];if(!sp)return;
+      ['ae','am','mb','ib','bs','cs','co','ss'].filter(function(k){return AS[k];}).forEach(function(sk){
+        var sp=isLavigneStore(sk)?p[sk+'_'+CK]:p[sk];if(!sp)return;
         var en=document.createElement('div');en.className='price-entry';
         var sl=document.createElement('div');sl.className='store-label '+sk;sl.textContent=sk.toUpperCase();en.appendChild(sl);
         [['reg','Reg'],['sup','Sup'],['die','Dsl']].forEach(function(pr){
@@ -201,8 +227,8 @@ function renderCalendar(){
 }
 function renderSummary(){
   var sb=document.getElementById('summaryBar');sb.innerHTML='';
-  var types=[['reg','E10 Regular Unleaded'],['sup','E10 Super Unleaded'],['die','Highway ULSD']];
-  var sts=['ae','am','mb','ib','bs'].filter(function(k){return AS[k];});
+  var types=[['reg','E10 Regular Unleaded'],['sup','E10 Super Unleaded'],['die','Highway ULSD'],['mid','E10 Midgrade 89'],['prem','E10 Premium 93']];
+  var sts=['ae','am','mb','ib','bs','cs','co','ss'].filter(function(k){return AS[k];});
   var dim=new Date(CY,CM+1,0).getDate();
   types.forEach(function(tp){
     var vals=[];
