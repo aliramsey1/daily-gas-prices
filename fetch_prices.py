@@ -14,7 +14,6 @@ STORE_MAP = {
     'Acadian Express': 'ae',
     'Acadiana Mart': 'am',
     'Moss Bluff Chevron': 'mb',
-    'Moss Bluff': 'mb',
 }
 
 PRODUCT_MAP = {
@@ -51,7 +50,7 @@ def fetch_emails():
             if status != 'OK':
                 continue
             since = (datetime.date.today() - datetime.timedelta(days=90)).strftime('%d-%b-%Y')
-            status2, data = mail.search(None, '(FROM "evans.no.reply@gmail.com" SINCE ' + since + ')')
+            status2, data = mail.search(None, '(FROM "evans.no.reply@gmail.com" SUBJECT "Latest prices" SINCE ' + since + ')')
             if status2 == 'OK' and data[0]:
                 ids = data[0].split()
                 used_folder = folder
@@ -110,10 +109,12 @@ def get_body(msg):
 
 def extract_prices_from_section(section):
     prices = {}
+    section_lower = section.lower()
     for product, key in PRODUCT_MAP.items():
+        product_lower = product.lower()
         for sep in [r'[,\s]+', r'[\t ]+', r'\s*,\s*']:
-            pattern = re.escape(product) + sep + r'([\d.]+)' + sep + r'([\d.]+)' + sep + r'([\d.]+)' + sep + r'([\d.]+)'
-            m = re.search(pattern, section)
+            pattern = re.escape(product_lower) + sep + r'([\d.]+)' + sep + r'([\d.]+)' + sep + r'([\d.]+)' + sep + r'([\d.]+)'
+            m = re.search(pattern, section_lower)
             if m:
                 prices[key] = float(m.group(4))
                 break
@@ -121,28 +122,28 @@ def extract_prices_from_section(section):
 
 def parse_all_stores(body):
     results = []
+    body_lower = body.lower()
     seen_keys = set()
-    # Find all store name occurrences and their positions
+    # Find all store name occurrences (case-insensitive) and their positions
     store_positions = []
     for name, key in STORE_MAP.items():
-        pos = body.find(name)
+        pos = body_lower.find(name.lower())
         if pos >= 0:
             store_positions.append((pos, name, key))
     # Sort by position in email
     store_positions.sort(key=lambda x: x[0])
-    # Remove duplicate keys (Moss Bluff Chevron and Moss Bluff both map to mb)
+    # Remove duplicate keys
     unique_positions = []
     for pos, name, key in store_positions:
         if key not in seen_keys:
             seen_keys.add(key)
             unique_positions.append((pos, name, key))
     if not unique_positions:
-        snippet = body[:300].replace('\n', ' ').replace('\r', '')
+        snippet = body[:200].replace('\n', ' ').replace('\r', '')
         print(f"  [DEBUG] No store found. Snippet: {snippet}")
         return []
     # Extract prices for each store section
     for i, (pos, name, key) in enumerate(unique_positions):
-        # Section runs from this store to next store (or end)
         if i + 1 < len(unique_positions):
             end = unique_positions[i + 1][0]
         else:
@@ -152,7 +153,7 @@ def parse_all_stores(body):
         if prices:
             results.append((key, prices))
         else:
-            print(f"  [DEBUG] Found {name} but no prices in section")
+            print(f"  [DEBUG] Found {name} but no prices parsed")
     return results
 
 def load_existing():
