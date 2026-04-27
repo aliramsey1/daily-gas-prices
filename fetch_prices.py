@@ -7,20 +7,26 @@ import datetime
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 
+
 GMAIL_ADDRESS = os.environ['GMAIL_ADDRESS']
 GMAIL_APP_PASSWORD = os.environ['GMAIL_APP_PASSWORD']
+
 
 STORE_MAP = {
     'Acadian Express': 'ae',
     'Acadiana Mart': 'am',
     'Moss Bluff Chevron': 'mb',
+    'Iberia Stores': 'ib',
+    'Bayou Stores': 'bs',
 }
+
 
 PRODUCT_MAP = {
     'E10 Regular Unleaded': 'reg',
     'E10 Super Unleaded': 'sup',
     'Highway Ultra Low Sulfur Diesel': 'die',
 }
+
 
 class HTMLStripper(HTMLParser):
     def __init__(self):
@@ -33,10 +39,12 @@ class HTMLStripper(HTMLParser):
     def get_text(self):
         return ' '.join(self.parts)
 
+
 def strip_html(html):
     s = HTMLStripper()
     s.feed(html)
     return s.get_text()
+
 
 def fetch_emails():
     mail = imaplib.IMAP4_SSL('imap.gmail.com')
@@ -46,22 +54,21 @@ def fetch_emails():
     used_folder = None
     for folder in folders_to_try:
         try:
-            status, _ = mail.select(folder, readonly=True)
-            if status != 'OK':
+            rv, _ = mail.select(folder, readonly=True)
+            if rv != 'OK':
                 continue
-            since = (datetime.date.today() - datetime.timedelta(days=90)).strftime('%d-%b-%Y')
-            status2, data = mail.search(None, '(FROM "evans.no.reply@gmail.com" SUBJECT "Latest prices" SINCE ' + since + ')')
-            if status2 == 'OK' and data[0]:
-                ids = data[0].split()
-                used_folder = folder
-                break
+            cutoff = (datetime.date.today() - datetime.timedelta(days=90)).strftime('%d-%b-%Y')
+            _, data = mail.search(None, f'(SINCE {cutoff} SUBJECT "Latest prices")')
+            ids = data[0].split()
+            used_folder = folder
+            print(f"Found {len(ids)} emails in {folder}")
+            break
         except Exception as e:
-            print(f"Error with folder {folder}: {e}")
+            print(f"Error searching {folder}: {e}")
     if not ids:
         print("No emails found")
         mail.logout()
         return []
-    print(f"Found {len(ids)} emails in {used_folder}")
     emails = []
     for eid in ids:
         try:
@@ -75,12 +82,14 @@ def fetch_emails():
     print(f"Fetched {len(emails)} emails from {used_folder}")
     return emails
 
+
 def parse_date(msg):
     date_str = msg['Date']
     try:
         return parsedate_to_datetime(date_str).date()
     except Exception:
         return None
+
 
 def get_body(msg):
     plain = ''
@@ -107,6 +116,7 @@ def get_body(msg):
         return strip_html(html)
     return ''
 
+
 def extract_prices_from_section(section):
     prices = {}
     section_lower = section.lower()
@@ -120,95 +130,102 @@ def extract_prices_from_section(section):
                 break
     return prices
 
+
 def parse_all_stores(body):
-    results = []
     body_lower = body.lower()
-    seen_keys = set()
-    # Find all store name occurrences (case-insensitive) and their positions
+    store_results = {}
     store_positions = []
-    for name, key in STORE_MAP.items():
+    for name, code in STORE_MAP.items():
         pos = body_lower.find(name.lower())
-        if pos >= 0:
-            store_positions.append((pos, name, key))
-    # Sort by position in email
+        if pos != -1:
+            store_positions.append((pos, name, code))
     store_positions.sort(key=lambda x: x[0])
-    # Remove duplicate keys
-    unique_positions = []
-    for pos, name, key in store_positions:
-        if key not in seen_keys:
-            seen_keys.add(key)
-            unique_positions.append((pos, name, key))
-    if not unique_positions:
-        snippet = body[:200].replace('\n', ' ').replace('\r', '')
-        print(f"  [DEBUG] No store found. Snippet: {snippet}")
-        return []
-    # Extract prices for each store section
-    for i, (pos, name, key) in enumerate(unique_positions):
-        if i + 1 < len(unique_positions):
-            end = unique_positions[i + 1][0]
-        else:
-            end = len(body)
-        section = body[pos:end]
+    for i, (pos, name, code) in enumerate(store_positions):
+        next_pos = store_positions[i + 1][0] if i + 1 < len(store_positions) else len(body)
+        section = body[pos:next_pos]
         prices = extract_prices_from_section(section)
         if prices:
-            results.append((key, prices))
+            store_results[code] = prices
+            print(f"  Parsed {name}: {prices}")
         else:
-            print(f"  [DEBUG] Found {name} but no prices parsed")
-    return results
+            print(f"  No prices found for {name} in section")
+    return store_results
 
-def load_existing():
-    if os.path.exists('prices.json'):
-        with open('prices.json') as f:
-            return json.load(f)
-    return {}
 
-def save_prices(data):
-    with open('prices.json', 'w') as f:
-        json.dump(data, f, indent=2)
+def update_prices_json(all_data):
+    prices_file = 'prices.json'
+    if os.path.exists(prices_file):
+        with open(prices_file, 'r') as f:
+            existing = json.load(f)
+    else:
+        existing = {}
+    added = 0
+    for date_str, store_data in all_data.items():
+        if date_str not in existing:
+            existing[date_str] = {}
+        for store_code, prices in store_data.items():
+            if store_code not in existing[date_str]:
+                existing[date_str][store_code] = prices
+                added += 1
+                print(f"Added {date_str} {store_code}: {prices}")
+    with open(prices_file, 'w') as f:
+        json.dump(existing, f, indent=2, sort_keys=True)
+    print(f"Total new entries added: {added}")
+    return existing
 
-def update_index_html(all_prices):
-    with open('index.html', 'r') as f:
+
+def build_js_data(prices_data):
+    lines = []
+    lines.append('var D={')
+    date_keys = sorted(prices_data.keys())
+    for i, dk in enumerate(date_keys):
+        stores = prices_data[dk]
+        store_parts = []
+        for sc, prods in stores.items():
+            prod_parts = []
+            for pk, pv in prods.items():
+                prod_parts.append(f'"{pk}":{pv}')
+            store_parts.append(f'"{sc}":{{{",".join(prod_parts)}}}')
+        comma = ',' if i < len(date_keys) - 1 else ''
+        lines.append(f'"{dk}":{{{",".join(store_parts)}}}{comma}')
+    lines.append('};')
+    return '\n'.join(lines)
+
+
+def update_index_html(prices_data):
+    js_data = build_js_data(prices_data)
+    with open('index.html', 'r', encoding='utf-8') as f:
         html = f.read()
-    entries = []
-    for date_str in sorted(all_prices.keys()):
-        stores = all_prices[date_str]
-        store_entries = []
-        for sk, pdata in stores.items():
-            prod_entries = []
-            for pk, pv in pdata.items():
-                prod_entries.append('"' + pk + '":' + str(pv))
-            store_entries.append('"' + sk + '":{' + ','.join(prod_entries) + '}')
-        entries.append('"' + date_str + '":{' + ','.join(store_entries) + '}')
-    data_str = '{' + ','.join(entries) + '}'
-    new_html = re.sub(r'var D=\{[^;]*\};', 'var D=' + data_str + ';', html)
-    with open('index.html', 'w') as f:
-        f.write(new_html)
-    print(f"Updated index.html with {len(entries)} date entries")
+    html = re.sub(r'var D=\{[\s\S]*?\};', js_data, html)
+    with open('index.html', 'w', encoding='utf-8') as f:
+        f.write(html)
+    print("Updated index.html with new price data")
+
 
 def main():
+    print("Starting price fetch...")
     emails = fetch_emails()
-    all_prices = load_existing()
-    new_count = 0
-    display_map = {'ae': 'Acadian Express', 'am': 'Acadiana Mart', 'mb': 'Moss Bluff Chevron'}
+    if not emails:
+        print("No emails to process")
+        return
+    all_data = {}
     for msg in emails:
         date = parse_date(msg)
         if not date:
             continue
-        date_str = str(date)
+        date_str = date.isoformat()
         body = get_body(msg)
         if not body:
             continue
         store_results = parse_all_stores(body)
-        for store_key, prices in store_results:
-            if date_str not in all_prices:
-                all_prices[date_str] = {}
-            if store_key not in all_prices[date_str]:
-                all_prices[date_str][store_key] = prices
-                new_count += 1
-                print(f"  Added {date_str} {display_map.get(store_key, store_key)}: {prices}")
-    save_prices(all_prices)
-    update_index_html(all_prices)
-    print(f"Done. Added {new_count} new entries. Total date entries: {len(all_prices)}")
+        if store_results:
+            if date_str not in all_data:
+                all_data[date_str] = {}
+            all_data[date_str].update(store_results)
+    prices_data = update_prices_json(all_data)
+    update_index_html(prices_data)
+    print("Done!")
+
 
 if __name__ == '__main__':
     main()
