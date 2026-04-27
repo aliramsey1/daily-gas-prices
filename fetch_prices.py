@@ -16,6 +16,7 @@ STORE_MAP = {
     'Moss Bluff Chevron': 'mb',
     'Moss Bluff': 'mb',
 }
+
 PRODUCT_MAP = {
     'E10 Regular Unleaded': 'reg',
     'E10 Super Unleaded': 'sup',
@@ -26,8 +27,10 @@ class HTMLStripper(HTMLParser):
     def __init__(self):
         super().__init__()
         self.parts = []
+
     def handle_data(self, data):
         self.parts.append(data)
+
     def get_text(self):
         return ' '.join(self.parts)
 
@@ -39,11 +42,9 @@ def strip_html(html):
 def fetch_emails():
     mail = imaplib.IMAP4_SSL('imap.gmail.com')
     mail.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-
     folders_to_try = ['"[Gmail]/All Mail"', 'INBOX']
     ids = []
     used_folder = None
-
     for folder in folders_to_try:
         try:
             status, _ = mail.select(folder, readonly=True)
@@ -54,17 +55,14 @@ def fetch_emails():
             if status2 == 'OK' and data[0]:
                 ids = data[0].split()
                 used_folder = folder
-                print(f"Found {len(ids)} emails in {folder}")
                 break
         except Exception as e:
-            print(f"Folder {folder} error: {e}")
-            continue
-
+            print(f"Error with folder {folder}: {e}")
     if not ids:
-        print("No emails found in any folder")
+        print("No emails found")
         mail.logout()
         return []
-
+    print(f"Found {len(ids)} emails in {used_folder}")
     emails = []
     for eid in ids:
         try:
@@ -74,7 +72,6 @@ def fetch_emails():
             emails.append(msg)
         except Exception as e:
             print(f"Error fetching email {eid}: {e}")
-
     mail.logout()
     print(f"Fetched {len(emails)} emails from {used_folder}")
     return emails
@@ -87,7 +84,6 @@ def parse_date(msg):
         return None
 
 def get_body(msg):
-    """Get plain text body, stripping HTML if needed."""
     plain = ''
     html = ''
     if msg.is_multipart():
@@ -106,32 +102,58 @@ def get_body(msg):
             html = body
         else:
             plain = body
-
     if plain:
         return plain
     if html:
         return strip_html(html)
     return ''
 
-def parse_prices(body):
-    store_name = None
-    for name in STORE_MAP:
-        if name in body:
-            store_name = name
-            break
-    if not store_name:
-        return None, {}
-
+def extract_prices_from_section(section):
     prices = {}
     for product, key in PRODUCT_MAP.items():
-        # Try various delimiters: comma+spaces, tabs, multiple spaces
         for sep in [r'[,\s]+', r'[\t ]+', r'\s*,\s*']:
             pattern = re.escape(product) + sep + r'([\d.]+)' + sep + r'([\d.]+)' + sep + r'([\d.]+)' + sep + r'([\d.]+)'
-            m = re.search(pattern, body)
+            m = re.search(pattern, section)
             if m:
                 prices[key] = float(m.group(4))
                 break
-    return store_name, prices
+    return prices
+
+def parse_all_stores(body):
+    results = []
+    seen_keys = set()
+    # Find all store name occurrences and their positions
+    store_positions = []
+    for name, key in STORE_MAP.items():
+        pos = body.find(name)
+        if pos >= 0:
+            store_positions.append((pos, name, key))
+    # Sort by position in email
+    store_positions.sort(key=lambda x: x[0])
+    # Remove duplicate keys (Moss Bluff Chevron and Moss Bluff both map to mb)
+    unique_positions = []
+    for pos, name, key in store_positions:
+        if key not in seen_keys:
+            seen_keys.add(key)
+            unique_positions.append((pos, name, key))
+    if not unique_positions:
+        snippet = body[:300].replace('\n', ' ').replace('\r', '')
+        print(f"  [DEBUG] No store found. Snippet: {snippet}")
+        return []
+    # Extract prices for each store section
+    for i, (pos, name, key) in enumerate(unique_positions):
+        # Section runs from this store to next store (or end)
+        if i + 1 < len(unique_positions):
+            end = unique_positions[i + 1][0]
+        else:
+            end = len(body)
+        section = body[pos:end]
+        prices = extract_prices_from_section(section)
+        if prices:
+            results.append((key, prices))
+        else:
+            print(f"  [DEBUG] Found {name} but no prices in section")
+    return results
 
 def load_existing():
     if os.path.exists('prices.json'):
@@ -146,7 +168,6 @@ def save_prices(data):
 def update_index_html(all_prices):
     with open('index.html', 'r') as f:
         html = f.read()
-
     entries = []
     for date_str in sorted(all_prices.keys()):
         stores = all_prices[date_str]
@@ -157,36 +178,33 @@ def update_index_html(all_prices):
                 prod_entries.append('"' + pk + '":' + str(pv))
             store_entries.append('"' + sk + '":{' + ','.join(prod_entries) + '}')
         entries.append('"' + date_str + '":{' + ','.join(store_entries) + '}')
-    new_data = 'var D={' + ','.join(entries) + '};'
-
-    html_new = re.sub(r'var D=\{[^;]*\};', new_data, html, flags=re.DOTALL)
+    data_str = '{' + ','.join(entries) + '}'
+    new_html = re.sub(r'var D=\{[^;]*\};', 'var D=' + data_str + ';', html)
     with open('index.html', 'w') as f:
-        f.write(html_new)
+        f.write(new_html)
     print(f"Updated index.html with {len(entries)} date entries")
 
 def main():
+    emails = fetch_emails()
     all_prices = load_existing()
-    msgs = fetch_emails()
     new_count = 0
-    for msg in msgs:
+    display_map = {'ae': 'Acadian Express', 'am': 'Acadiana Mart', 'mb': 'Moss Bluff Chevron'}
+    for msg in emails:
         date = parse_date(msg)
         if not date:
             continue
-        date_str = date.strftime('%Y-%m-%d')
-        subject = msg.get('Subject', '')
-        if 'Evans Oil' not in subject and 'Latest prices' not in subject:
-            continue
+        date_str = str(date)
         body = get_body(msg)
-        store_name, prices = parse_prices(body)
-        if not store_name or not prices:
+        if not body:
             continue
-        store_key = STORE_MAP[store_name]
-        if date_str not in all_prices:
-            all_prices[date_str] = {}
-        all_prices[date_str][store_key] = prices
-        new_count += 1
-        print(f"  Added {date_str} {store_name}: {prices}")
-
+        store_results = parse_all_stores(body)
+        for store_key, prices in store_results:
+            if date_str not in all_prices:
+                all_prices[date_str] = {}
+            if store_key not in all_prices[date_str]:
+                all_prices[date_str][store_key] = prices
+                new_count += 1
+                print(f"  Added {date_str} {display_map.get(store_key, store_key)}: {prices}")
     save_prices(all_prices)
     update_index_html(all_prices)
     print(f"Done. Added {new_count} new entries. Total date entries: {len(all_prices)}")
