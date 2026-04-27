@@ -5,6 +5,7 @@ import json
 import os
 import datetime
 from email.utils import parsedate_to_datetime
+from html.parser import HTMLParser
 
 GMAIL_ADDRESS = os.environ['GMAIL_ADDRESS']
 GMAIL_APP_PASSWORD = os.environ['GMAIL_APP_PASSWORD']
@@ -20,11 +21,24 @@ PRODUCT_MAP = {
     'Highway Ultra Low Sulfur Diesel': 'die',
 }
 
+class HTMLStripper(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.parts = []
+    def handle_data(self, data):
+        self.parts.append(data)
+    def get_text(self):
+        return ' '.join(self.parts)
+
+def strip_html(html):
+    s = HTMLStripper()
+    s.feed(html)
+    return s.get_text()
+
 def fetch_emails():
     mail = imaplib.IMAP4_SSL('imap.gmail.com')
     mail.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
 
-    # Search in [Gmail]/All Mail to catch archived/labeled emails too
     folders_to_try = ['"[Gmail]/All Mail"', 'INBOX']
     ids = []
     used_folder = None
@@ -72,19 +86,31 @@ def parse_date(msg):
         return None
 
 def get_body(msg):
-    body = ''
+    """Get plain text body, stripping HTML if needed."""
+    plain = ''
+    html = ''
     if msg.is_multipart():
         for part in msg.walk():
             ct = part.get_content_type()
             cd = str(part.get('Content-Disposition', ''))
-            if ct == 'text/plain' and 'attachment' not in cd:
-                body = part.get_payload(decode=True).decode('utf-8', errors='replace')
-                break
-            elif ct == 'text/html' and not body and 'attachment' not in cd:
-                body = part.get_payload(decode=True).decode('utf-8', errors='replace')
+            if 'attachment' in cd:
+                continue
+            if ct == 'text/plain':
+                plain = part.get_payload(decode=True).decode('utf-8', errors='replace')
+            elif ct == 'text/html':
+                html = part.get_payload(decode=True).decode('utf-8', errors='replace')
     else:
         body = msg.get_payload(decode=True).decode('utf-8', errors='replace')
-    return body
+        if '<html' in body.lower() or '<table' in body.lower():
+            html = body
+        else:
+            plain = body
+
+    if plain:
+        return plain
+    if html:
+        return strip_html(html)
+    return ''
 
 def parse_prices(body):
     store_name = None
@@ -93,23 +119,17 @@ def parse_prices(body):
             store_name = name
             break
     if not store_name:
-        # Debug: print first 300 chars of body to help diagnose
-        print(f"  Store not found in body snippet: {repr(body[:300])}")
         return None, {}
 
     prices = {}
     for product, key in PRODUCT_MAP.items():
-        # Try comma-separated: ProductName, unitprice, tax, freight, total
-        pattern = re.escape(product) + r'[,\s]+([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)'
-        m = re.search(pattern, body)
-        if m:
-            prices[key] = float(m.group(4))
-        else:
-            # Try tab or multiple spaces
-            pattern2 = re.escape(product) + r'[\t ]+([\d.]+)[\t ]+([\d.]+)[\t ]+([\d.]+)[\t ]+([\d.]+)'
-            m2 = re.search(pattern2, body)
-            if m2:
-                prices[key] = float(m2.group(4))
+        # Try various delimiters: comma+spaces, tabs, multiple spaces
+        for sep in [r'[,\s]+', r'[\t ]+', r'\s*,\s*']:
+            pattern = re.escape(product) + sep + r'([\d.]+)' + sep + r'([\d.]+)' + sep + r'([\d.]+)' + sep + r'([\d.]+)'
+            m = re.search(pattern, body)
+            if m:
+                prices[key] = float(m.group(4))
+                break
     return store_name, prices
 
 def load_existing():
@@ -152,14 +172,12 @@ def main():
         if not date:
             continue
         date_str = date.strftime('%Y-%m-%d')
-        # Check subject contains Evans Oil
         subject = msg.get('Subject', '')
         if 'Evans Oil' not in subject and 'Latest prices' not in subject:
             continue
         body = get_body(msg)
         store_name, prices = parse_prices(body)
         if not store_name or not prices:
-            print(f"  Skipped {date_str}: subject={subject[:60]}")
             continue
         store_key = STORE_MAP[store_name]
         if date_str not in all_prices:
