@@ -1,218 +1,149 @@
-#!/usr/bin/env python3
-"""
-fetch_prices.py - Fetches Evans Oil daily price emails from Gmail
-and updates the price data in index.html
-
-Required GitHub Secrets:
-  GMAIL_CREDENTIALS - Base64-encoded Google OAuth2 credentials.json
-  GMAIL_TOKEN       - Base64-encoded Gmail OAuth2 token.json
-
-Setup instructions in README.md
-"""
-
-import os
+import imaplib
+import email
 import re
 import json
-import base64
-import pickle
-from datetime import datetime, timedelta
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
+import os
+import datetime
 
-SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
+GMAIL_ADDRESS = os.environ['GMAIL_ADDRESS']
+GMAIL_APP_PASSWORD = os.environ['GMAIL_APP_PASSWORD']
 
-def get_gmail_service():
-    """Authenticate with Gmail API using stored credentials."""
-    creds = None
-    
-    # Load credentials from environment (base64-encoded JSON)
-    creds_b64 = os.environ.get('GMAIL_CREDENTIALS')
-    token_b64 = os.environ.get('GMAIL_TOKEN')
-    
-    if token_b64:
-        token_data = json.loads(base64.b64decode(token_b64).decode())
-        creds = Credentials.from_authorized_user_info(token_data, SCOPES)
-    
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            raise Exception("Gmail credentials not valid. Please re-authorize.")
-    
-    return build('gmail', 'v1', credentials=creds)
+STORE_MAP = {
+    'Acadian Express': 'ae',
+    'Acadiana Mart': 'am',
+    'Moss Bluff Chevron': 'mb',
+}
+PRODUCT_MAP = {
+    'E10 Regular Unleaded': 'reg',
+    'E10 Super Unleaded': 'sup',
+    'Highway Ultra Low Sulfur Diesel': 'die',
+}
 
-def search_evans_oil_emails(service, days_back=3):
-    """Search for Evans Oil price emails from the last N days."""
-    after_date = (datetime.now() - timedelta(days=days_back)).strftime('%Y/%m/%d')
-    query = f'from:evans.no.reply@gmail.com subject:"Latest prices from Evans Oil Company" after:{after_date}'
-    
-    results = service.users().messages().list(userId='me', q=query).execute()
-    messages = results.get('messages', [])
-    return messages
+def fetch_emails():
+    mail = imaplib.IMAP4_SSL('imap.gmail.com')
+    mail.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+    mail.select('inbox')
+    # Search last 60 days
+    since = (datetime.date.today() - datetime.timedelta(days=60)).strftime('%d-%b-%Y')
+    status, data = mail.search(None, f'(FROM "evans.no.reply@gmail.com" SUBJECT "Latest prices from Evans Oil Company" SINCE {since})')
+    ids = data[0].split()
+    emails = []
+    for eid in ids:
+        _, msg_data = mail.fetch(eid, '(RFC822)')
+        raw = msg_data[0][1]
+        msg = email.message_from_bytes(raw)
+        emails.append(msg)
+    mail.logout()
+    return emails
 
-def parse_email_body(service, msg_id):
-    """Get email body and parse gas prices."""
-    msg = service.users().messages().get(userId='me', id=msg_id, format='full').execute()
-    
-    # Get email date
-    headers = msg['payload']['headers']
-    date_str = next((h['value'] for h in headers if h['name'] == 'Date'), None)
-    
-    # Parse date
+def parse_date(msg):
+    date_str = msg['Date']
+    for fmt in ['%a, %d %b %Y %H:%M:%S %z', '%a, %d %b %Y %H:%M:%S %Z']:
+        try:
+            dt = datetime.datetime.strptime(date_str.strip(), fmt)
+            return dt.date()
+        except ValueError:
+            pass
+    # fallback: try parsing with email.utils
     from email.utils import parsedate_to_datetime
     try:
-        email_date = parsedate_to_datetime(date_str)
-        date_key = email_date.strftime('%Y-%m-%d')
-    except:
-        date_key = datetime.now().strftime('%Y-%m-%d')
-    
-    # Get body text
+        return parsedate_to_datetime(date_str).date()
+    except Exception:
+        return None
+
+def get_body(msg):
     body = ''
-    if 'parts' in msg['payload']:
-        for part in msg['payload']['parts']:
-            if part['mimeType'] == 'text/plain':
-                data = part['body'].get('data', '')
-                body = base64.urlsafe_b64decode(data).decode('utf-8', errors='ignore')
+    if msg.is_multipart():
+        for part in msg.walk():
+            ct = part.get_content_type()
+            if ct == 'text/plain':
+                body = part.get_payload(decode=True).decode('utf-8', errors='replace')
                 break
+            elif ct == 'text/html' and not body:
+                body = part.get_payload(decode=True).decode('utf-8', errors='replace')
     else:
-        data = msg['payload']['body'].get('data', '')
-        body = base64.urlsafe_b64decode(data).decode('utf-8', errors='ignore')
-    
-    return date_key, body
+        body = msg.get_payload(decode=True).decode('utf-8', errors='replace')
+    return body
 
-def extract_prices(body):
-    """Extract gas prices from email body text.
-    
-    Email format:
-    Store Name
-    Product Name, Unit Price, Tax, Freight, Total
-    """
-    stores = {
-        'Acadian Express': 'ae',
-        'Acadiana Mart': 'am', 
-        'Moss Bluff Chevron': 'mb',
-        'Moss Bluff': 'mb'
-    }
-    
-    products = {
-        'E10 Regular Unleaded': 'reg',
-        'E10 Super Unleaded': 'sup',
-        'Highway Ultra Low Sulfur Diesel': 'die',
-        'Highway Ultra Low Sulfur': 'die'
-    }
-    
+def parse_prices(body):
+    store_name = None
+    for name in STORE_MAP:
+        if name in body:
+            store_name = name
+            break
+    if not store_name:
+        return None, {}
+
     prices = {}
-    current_store = None
-    
-    for line in body.split('\n'):
-        line = line.strip()
-        
-        # Check if line is a store name
-        for store_name, store_key in stores.items():
-            if store_name.lower() in line.lower():
-                current_store = store_key
-                if current_store not in prices:
-                    prices[current_store] = {}
-                break
-        
-        # Check if line contains price data
-        if current_store and ',' in line:
-            parts = [p.strip() for p in line.split(',')]
-            if len(parts) >= 4:
-                # Try to identify product and extract total price
-                line_lower = line.lower()
-                for prod_name, prod_key in products.items():
-                    if prod_name.lower() in line_lower:
-                        try:
-                            # Last number is the total price
-                            total = float(parts[-1])
-                            prices[current_store][prod_key] = total
-                        except ValueError:
-                            pass
-                        break
-    
-    return prices if all(len(v) == 3 for v in prices.values() if v) else prices
+    for product, key in PRODUCT_MAP.items():
+        # Match: ProductName, unitprice, tax, freight, total
+        pattern = re.escape(product) + r'[,\s]+([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)'
+        m = re.search(pattern, body)
+        if m:
+            prices[key] = float(m.group(4))  # total price
+    return store_name, prices
 
-def update_index_html(date_prices):
-    """Update the priceData object in index.html with new prices."""
-    with open('index.html', 'r', encoding='utf-8') as f:
-        content = f.read()
-    
-    # Find the priceData variable
-    pattern = r'(var D=\{)(.*?)(\};)'
-    match = re.search(pattern, content, re.DOTALL)
-    
-    if not match:
-        print("Could not find priceData in index.html")
-        return False
-    
-    # Parse existing data
-    existing_json_str = '{' + match.group(2) + '}'
-    try:
-        existing_data = json.loads(existing_json_str)
-    except:
-        existing_data = {}
-    
-    # Merge new prices
-    for date_key, store_prices in date_prices.items():
-        if store_prices:
-            existing_data[date_key] = store_prices
-            print(f"Updated prices for {date_key}: {store_prices}")
-    
-    # Sort by date
-    sorted_data = dict(sorted(existing_data.items()))
-    
-    # Serialize back (compact format)
-    new_json = json.dumps(sorted_data, separators=(',', ':'))
-    new_data_str = new_json[1:-1]  # Remove outer braces
-    
-    # Replace in content
-    new_content = content[:match.start()] + 'var D={' + new_data_str + '};' + content[match.end():]
-    
-    with open('index.html', 'w', encoding='utf-8') as f:
-        f.write(new_content)
-    
-    return True
+def load_existing():
+    if os.path.exists('prices.json'):
+        with open('prices.json') as f:
+            return json.load(f)
+    return {}
+
+def save_prices(data):
+    with open('prices.json', 'w') as f:
+        json.dump(data, f, indent=2)
+
+def update_index_html(all_prices):
+    with open('index.html', 'r') as f:
+        html = f.read()
+
+    # Build the JS data object
+    js_lines = ['var D={']
+    for date_str in sorted(all_prices.keys()):
+        stores = all_prices[date_str]
+        store_parts = []
+        for sk, pdata in stores.items():
+            prod_parts = [f'{pk}:{pv}' for pk, pv in pdata.items()]
+            store_parts.append('{' + ','.join(prod_parts) + '}')
+        js_lines.append(f'  "{date_str}":{{{",".join([f"{sk}:{{{",".join([f\"{pk}\":{pv} for pk,pv in stores[sk].items()])}}}" for sk in stores])}}},')
+    js_lines.append('};')
+
+    # Build proper JS
+    entries = []
+    for date_str in sorted(all_prices.keys()):
+        stores = all_prices[date_str]
+        store_entries = []
+        for sk, pdata in stores.items():
+            prod_entries = [f'"{pk}":{pv}' for pk, pv in pdata.items()]
+            store_entries.append(f'"{sk}":{{{",".join(prod_entries)}}}')
+        entries.append(f'"{date_str}":{{{",".join(store_entries)}}}')
+    new_data = 'var D={' + ','.join(entries) + '};'
+
+    # Replace existing var D={...}; in the HTML
+    html_new = re.sub(r'var D=\{[^;]*\};', new_data, html, flags=re.DOTALL)
+    with open('index.html', 'w') as f:
+        f.write(html_new)
 
 def main():
-    print("Fetching Evans Oil price emails...")
-    
-    service = get_gmail_service()
-    messages = search_evans_oil_emails(service, days_back=5)
-    
-    if not messages:
-        print("No new Evans Oil emails found.")
-        return
-    
-    print(f"Found {len(messages)} emails to process.")
-    
-    date_prices = {}
-    
-    for msg in messages:
-        date_key, body = parse_email_body(service, msg['id'])
-        prices = extract_prices(body)
-        
-        if prices:
-            # If date already seen, merge (multiple emails = multiple stores)
-            if date_key in date_prices:
-                for store_key, store_prices in prices.items():
-                    if store_prices:
-                        date_prices[date_key][store_key] = store_prices
-            else:
-                date_prices[date_key] = prices
-            print(f"Parsed prices for {date_key}")
-        else:
-            print(f"No prices found in email for {date_key}")
-    
-    if date_prices:
-        success = update_index_html(date_prices)
-        if success:
-            print("Successfully updated index.html with new prices!")
-        else:
-            print("Failed to update index.html")
-    else:
-        print("No valid price data extracted.")
+    all_prices = load_existing()
+    msgs = fetch_emails()
+    for msg in msgs:
+        date = parse_date(msg)
+        if not date:
+            continue
+        date_str = date.strftime('%Y-%m-%d')
+        body = get_body(msg)
+        store_name, prices = parse_prices(body)
+        if not store_name or not prices:
+            continue
+        store_key = STORE_MAP[store_name]
+        if date_str not in all_prices:
+            all_prices[date_str] = {}
+        all_prices[date_str][store_key] = prices
+
+    save_prices(all_prices)
+    update_index_html(all_prices)
+    print(f"Updated {len(all_prices)} date entries.")
 
 if __name__ == '__main__':
     main()
