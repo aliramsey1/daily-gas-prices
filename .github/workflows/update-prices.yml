@@ -21,7 +21,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install secure-smtplib
+        run: pip install secure-smtplib pdfminer.six
 
       - name: Run price fetcher
         env:
