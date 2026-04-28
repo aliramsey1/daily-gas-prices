@@ -21,13 +21,19 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install secure-smtplib pdfminer.six
+        run: pip install secure-smtplib pdfminer.six requests beautifulsoup4
 
-      - name: Run price fetcher
+      - name: Run Evans/Lavigne price fetcher
         env:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
         run: python fetch_prices.py
+
+      - name: Run Guillory Oil price fetcher
+        env:
+          GUILLORY_USERNAME: ${{ secrets.GUILLORY_USERNAME }}
+          GUILLORY_PASSWORD: ${{ secrets.GUILLORY_PASSWORD }}
+        run: python fetch_guillory.py
 
       - name: Commit and push changes
         run: |
