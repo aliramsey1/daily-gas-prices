@@ -6,8 +6,8 @@ import datetime
 from bs4 import BeautifulSoup
 
 GUILLORY_URL = 'https://www.guilloryoil.net'
-GUILLORY_USERNAME = os.environ['GUILLORY_USERNAME']
-GUILLORY_PASSWORD = os.environ['GUILLORY_PASSWORD']
+GUILLORY_USERNAME = os.environ.get('GUILLORY_USERNAME', '')
+GUILLORY_PASSWORD = os.environ.get('GUILLORY_PASSWORD', '')
 
 # Store account numbers and their calendar keys
 GUILLORY_STORES = {
@@ -183,6 +183,9 @@ def update_gd_in_index_html(prices_data):
 
 def main():
     print('Starting Guillory Oil price fetch...')
+    if not GUILLORY_USERNAME or not GUILLORY_PASSWORD:
+        print('Guillory: Missing credentials (GUILLORY_USERNAME/GUILLORY_PASSWORD) - skipping')
+        return
     guillory_data = fetch_all_guillory()
     if not guillory_data:
         print('No Guillory data fetched - aborting')
