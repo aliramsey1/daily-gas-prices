@@ -83,7 +83,7 @@ def fetch_guillory_prices(session, account_number, days=90):
 def parse_guillory_html(html):
     # Extract the DataTable data array from the HTML
     # Pattern: 'data': [["date","time","loc_id","loc_name","prod_id","product","base","surcharge","taxes","total","change"],...]
-    m = re.search(r"'data':s*([[.*?]])", html, re.DOTALL)
+    m = re.search(r"'data':\s*(\[\[.*?\]\])", html, re.DOTALL)
     if not m:
         print('  Could not find data array in HTML')
         return {}
