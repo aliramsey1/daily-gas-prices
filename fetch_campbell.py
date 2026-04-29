@@ -34,7 +34,7 @@ def fetch_campbell_emails():
     seen_message_ids = set()
     results = []
 
-    # Search only for Daily Price Update emails - avoids processing hundreds of invoices
+    # Search only for Daily Price Update emails
     searches = [
         ('INBOX', f'SINCE {since_date} SUBJECT "Daily Price Update"'),
         ('"[Gmail]/All Mail"', f'SINCE {since_date} SUBJECT "Daily Price Update"'),
@@ -63,7 +63,6 @@ def fetch_campbell_emails():
             frm = msg.get('From', '')
             subj = msg.get('Subject', '')
             mid = msg.get('Message-ID', str(eid))
-            print(f'Campbell: id={eid} From={frm[:80]} Subj={subj[:80]}')
 
             if mid in seen_message_ids:
                 continue
@@ -71,12 +70,10 @@ def fetch_campbell_emails():
 
             # Only process emails from campbelloilco.com
             if 'campbelloilco' not in frm.lower():
-                print('  Skipping non-Campbell sender')
                 continue
 
             # Only process Daily Price Update emails
             if 'price update' not in subj.lower():
-                print('  Skipping non-price-update email')
                 continue
 
             try:
@@ -93,7 +90,7 @@ def fetch_campbell_emails():
     return results
 
 
-def parse_pdf_prices(pdf_bytes):
+def parse_pdf_prices(pdf_bytes, debug=False):
     """Parse Campbell Oil PDF price quotation using pdfminer."""
     try:
         text = pdf_extract_text(io.BytesIO(pdf_bytes))
@@ -109,30 +106,92 @@ def parse_pdf_prices(pdf_bytes):
     if 'campbelloilco' not in text_lower and 'price quotation' not in text_lower:
         return None
 
-    lines = [l.strip() for l in text.split('\n') if l.strip()]
+    if debug:
+        print(f'Campbell: PDF text (first 800 chars):')
+        print(repr(text[:800]))
+
     prices = {}
-
-    for line in lines:
-        if re.search(r'Regular\s+87', line, re.IGNORECASE) or (re.search(r'Regular', line, re.IGNORECASE) and 'Eth' in line):
-            nums = re.findall(r'\d+\.\d{4,6}', line)
-            if nums:
-                prices['reg'] = float(nums[-1])
-                print(f'Campbell: reg={prices["reg"]}')
-
-        if re.search(r'Premium\s+93', line, re.IGNORECASE) or (re.search(r'Premium', line, re.IGNORECASE) and 'Eth' in line):
-            nums = re.findall(r'\d+\.\d{4,6}', line)
-            if nums:
-                prices['prem'] = float(nums[-1])
-                print(f'Campbell: prem={prices["prem"]}')
-
-        if re.search(r'Diesel\s+Clr', line, re.IGNORECASE) or re.search(r'^Diesel', line, re.IGNORECASE):
-            nums = re.findall(r'\d+\.\d{4,6}', line)
-            if nums:
-                prices['dsl'] = float(nums[-1])
-                print(f'Campbell: dsl={prices["dsl"]}')
-
     pdf_date = None
-    m = re.search(r'Start\s*Date\s*([A-Za-z]+\s+\d{1,2},?\s+\d{4})', text, re.IGNORECASE)
+
+    # Try line-by-line parsing first
+    lines = [l.strip() for l in text.split('\n') if l.strip()]
+    for i, line in enumerate(lines):
+        # Check for product name then look for Total Quote number on same or next line
+        if re.search(r'Regular.*87.*Eth', line, re.IGNORECASE) or re.search(r'Regular.*Eth', line, re.IGNORECASE):
+            # Look for 4+ decimal numbers on same line or next 2 lines
+            for check_line in lines[i:i+3]:
+                nums = re.findall(r'\d+\.\d{4,6}', check_line)
+                if len(nums) >= 3:  # Cost, Taxes, Total Quote
+                    prices['reg'] = float(nums[-1])  # Last number = Total Quote
+                    print(f'Campbell: reg={prices["reg"]} from line: {check_line[:60]}')
+                    break
+                elif len(nums) == 1 and i + 3 < len(lines):
+                    # Numbers may be split across lines (one per line in table)
+                    # Look ahead for 2 more number-only lines
+                    all_nums = []
+                    for j in range(i, min(i+6, len(lines))):
+                        ns = re.findall(r'^\d+\.\d{4,6}$', lines[j])
+                        if ns:
+                            all_nums.extend(ns)
+                    if len(all_nums) >= 3:
+                        prices['reg'] = float(all_nums[-1])
+                        print(f'Campbell: reg={prices["reg"]} (split lines)')
+                        break
+
+        if re.search(r'Premium.*93.*Eth', line, re.IGNORECASE) or re.search(r'Premium.*Eth', line, re.IGNORECASE):
+            for check_line in lines[i:i+3]:
+                nums = re.findall(r'\d+\.\d{4,6}', check_line)
+                if len(nums) >= 3:
+                    prices['prem'] = float(nums[-1])
+                    print(f'Campbell: prem={prices["prem"]} from line: {check_line[:60]}')
+                    break
+                elif len(nums) == 1:
+                    all_nums = []
+                    for j in range(i, min(i+6, len(lines))):
+                        ns = re.findall(r'^\d+\.\d{4,6}$', lines[j])
+                        if ns:
+                            all_nums.extend(ns)
+                    if len(all_nums) >= 3:
+                        prices['prem'] = float(all_nums[-1])
+                        print(f'Campbell: prem={prices["prem"]} (split lines)')
+                        break
+
+        if re.search(r'Diesel.*Clr', line, re.IGNORECASE) or re.search(r'^Diesel', line, re.IGNORECASE):
+            for check_line in lines[i:i+3]:
+                nums = re.findall(r'\d+\.\d{4,6}', check_line)
+                if len(nums) >= 3:
+                    prices['dsl'] = float(nums[-1])
+                    print(f'Campbell: dsl={prices["dsl"]} from line: {check_line[:60]}')
+                    break
+                elif len(nums) == 1:
+                    all_nums = []
+                    for j in range(i, min(i+6, len(lines))):
+                        ns = re.findall(r'^\d+\.\d{4,6}$', lines[j])
+                        if ns:
+                            all_nums.extend(ns)
+                    if len(all_nums) >= 3:
+                        prices['dsl'] = float(all_nums[-1])
+                        print(f'Campbell: dsl={prices["dsl"]} (split lines)')
+                        break
+
+    # Also try full-text search as fallback if line parsing fails
+    if not prices:
+        # Try searching entire text for number patterns near product names
+        m = re.search(r'Regular.*?Eth.*?(\d+\.\d{4,6})\s*$', text, re.IGNORECASE | re.MULTILINE)
+        if m:
+            prices['reg'] = float(m.group(1))
+            print(f'Campbell: reg={prices["reg"]} (fulltext)')
+        m = re.search(r'Premium.*?Eth.*?(\d+\.\d{4,6})\s*$', text, re.IGNORECASE | re.MULTILINE)
+        if m:
+            prices['prem'] = float(m.group(1))
+            print(f'Campbell: prem={prices["prem"]} (fulltext)')
+        m = re.search(r'Diesel.*?Clr.*?(\d+\.\d{4,6})\s*$', text, re.IGNORECASE | re.MULTILINE)
+        if m:
+            prices['dsl'] = float(m.group(1))
+            print(f'Campbell: dsl={prices["dsl"]} (fulltext)')
+
+    # Parse Start Date
+    m = re.search(r'Start\s*Date[:\s]*([A-Za-z]+\s+\d{1,2},?\s+\d{4})', text, re.IGNORECASE)
     if m:
         try:
             raw = m.group(1).strip().replace(',', '')
@@ -149,7 +208,6 @@ def get_pdf_from_msg(msg):
         ct = part.get_content_type()
         fn = part.get_filename() or ''
         if ct == 'application/pdf' or fn.lower().endswith('.pdf'):
-            print(f'Campbell: Found PDF: {fn[:60]}')
             return part.get_payload(decode=True)
     return None
 
@@ -161,14 +219,16 @@ def process_campbell_emails():
         return
 
     all_data = {}
+    debug_printed = False
     for msg in emails:
         pdf_bytes = get_pdf_from_msg(msg)
         if not pdf_bytes:
-            date_str = getattr(msg, '_campbell_date', datetime.date.today()).strftime('%Y-%m-%d')
-            print(f'Campbell: No PDF in email {date_str}')
             continue
 
-        result = parse_pdf_prices(pdf_bytes)
+        # Print PDF text for first PDF to diagnose parsing
+        result = parse_pdf_prices(pdf_bytes, debug=(not debug_printed))
+        if result is not None:
+            debug_printed = True
         if not result:
             continue
         prices, pdf_date = result
