@@ -35,10 +35,16 @@ jobs:
           GUILLORY_PASSWORD: ${{ secrets.GUILLORY_PASSWORD }}
         run: python fetch_guillory.py
 
-      - name: Commit and push changes
+      - name: Run Campbell Oil price fetcher
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: python fetch_campbell.py
+
+      - name: Commit updated prices
         run: |
-          git config --global user.name "GitHub Actions"
-          git config --global user.email "actions@github.com"
+          git config user.name "actions-user"
+          git config user.email "actions@github.com"
           git add index.html prices.json
-          git diff --staged --quiet || git commit -m "Auto-update gas prices $(date +'%Y-%m-%d')"
+          git diff --cached --quiet || git commit -m "Auto-update gas prices $(date +'%Y-%m-%d')"
           git push
