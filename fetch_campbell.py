@@ -18,23 +18,29 @@ CAMPBELL_STORE_KEY = 'pn'
 def fetch_campbell_emails():
     mail = imaplib.IMAP4_SSL('imap.gmail.com')
     mail.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-    mail.select('INBOX')
+    # Search in [Gmail]/All Mail to catch all emails including archived ones
+    mail.select('"[Gmail]/All Mail"')
     since_date = (datetime.date.today() - datetime.timedelta(days=90)).strftime('%d-%b-%Y')
-    _, data = mail.search(None, f'(SINCE {since_date} SUBJECT "Campbell oil: Daily Price Update")')
+    _, data = mail.search(None, f'(SINCE {since_date} FROM "accounts@campbelloilco.com")')
     ids = data[0].split()
-    print(f"Campbell: Found {len(ids)} emails")
+    print(f"Campbell: Found {len(ids)} emails from campbelloilco.com")
     emails = []
     for eid in ids:
         try:
             _, msg_data = mail.fetch(eid, '(RFC822)')
             msg = email.message_from_bytes(msg_data[0][1])
+            subject = msg.get('Subject', '')
+            if 'Campbell oil' not in subject and 'Daily Price' not in subject:
+                continue
             email_date = parsedate_to_datetime(msg['Date']).date()
             date_str = email_date.strftime('%Y-%m-%d')
             msg['date_str'] = date_str
             emails.append(msg)
+            print(f"Campbell: Matched email dated {date_str}: {subject}")
         except Exception as e:
             print(f"Campbell: Error fetching email {eid}: {e}")
     mail.logout()
+    print(f"Campbell: Matched {len(emails)} Pop N Go price emails")
     return emails
 
 
@@ -49,6 +55,7 @@ def parse_campbell_pdf(pdf_bytes):
     try:
         from pdfminer.high_level import extract_text
         text = extract_text(io.BytesIO(pdf_bytes))
+        print(f"Campbell PDF text (first 500 chars): {text[:500]}")
         lines = [l.strip() for l in text.split('\n') if l.strip()]
         prices = {}
         for line in lines:
@@ -57,18 +64,21 @@ def parse_campbell_pdf(pdf_bytes):
             if not m:
                 continue
             val = float(m.group(1))
-            if 'diesel' in line_lower or 'dsl' in line_lower:
+            if val < 1.0 or val > 10.0:
+                continue
+            if 'diesel' in line_lower or 'dsl' in line_lower or 'ulsd' in line_lower:
                 prices['die'] = val
-            elif 'premium' in line_lower or 'prem' in line_lower or 'super' in line_lower:
+            elif 'premium' in line_lower or 'prem' in line_lower or 'super' in line_lower or 'plus' in line_lower:
                 prices['prem'] = val
-            elif 'mid' in line_lower or 'midgrade' in line_lower or 'plus' in line_lower:
+            elif 'mid' in line_lower or 'midgrade' in line_lower:
                 prices['mid'] = val
-            elif 'regular' in line_lower or 'reg' in line_lower or 'unl' in line_lower:
+            elif 'regular' in line_lower or 'reg' in line_lower or 'unl' in line_lower or 'unleaded' in line_lower:
                 prices['reg'] = val
         if not prices:
-            # Fallback: grab all prices in order (reg, mid/prem, die)
-            all_prices = re.findall(r'\d+\.\d{3,5}', text)
+            # Fallback: grab all numeric prices in order
+            all_prices = re.findall(r'\b(\d+\.\d{3,5})\b', text)
             price_vals = [float(p) for p in all_prices if 1.0 < float(p) < 10.0]
+            print(f"Campbell PDF fallback prices found: {price_vals[:8]}")
             if len(price_vals) >= 1:
                 prices['reg'] = price_vals[0]
             if len(price_vals) >= 2:
@@ -98,7 +108,7 @@ def process_campbell_emails(emails):
             date_str = msg['date_str']
             all_data.setdefault(date_str, {})
             all_data[date_str][CAMPBELL_STORE_KEY] = prices
-            print(f"Campbell: Parsed prices for {date_str}: {prices}")
+            print(f"Campbell: Saved prices for {date_str}: {prices}")
         except Exception as e:
             print(f"Campbell: Error processing email: {e}")
     return all_data
