@@ -37,14 +37,14 @@ jobs:
 
       - name: Run Campbell Oil price fetcher
         env:
-          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
-          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          CAMPBELL_GMAIL_ADDRESS: ${{ secrets.CAMPBELL_GMAIL_ADDRESS }}
+          CAMPBELL_GMAIL_APP_PASSWORD: ${{ secrets.CAMPBELL_GMAIL_APP_PASSWORD }}
         run: python fetch_campbell.py
 
       - name: Commit updated prices
         run: |
           git config user.name "actions-user"
           git config user.email "actions@github.com"
-          git add index.html prices.json
-          git diff --cached --quiet || git commit -m "Auto-update gas prices $(date +'%Y-%m-%d')"
+          git add prices.json
+          git diff --cached --quiet || git commit -m "Auto-update gas prices $(date +%Y-%m-%d)"
           git push
