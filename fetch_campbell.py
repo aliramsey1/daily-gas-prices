@@ -20,7 +20,13 @@ CAMPBELL_STORE_KEY = 'pn'
 def fetch_campbell_emails():
     """Fetch Campbell Oil price emails from popngo786@gmail.com."""
     mail = imaplib.IMAP4_SSL('imap.gmail.com')
-    mail.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+    try:
+        mail.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+    except Exception as e:
+        print(f"Campbell: Login failed: {e}")
+        print("Campbell: Check CAMPBELL_GMAIL_ADDRESS and CAMPBELL_GMAIL_APP_PASSWORD secrets")
+        mail.logout()
+        return []
     print(f"Campbell: Logged in successfully")
 
     since_date = (datetime.date.today() - datetime.timedelta(days=90)).strftime('%d-%b-%Y')
