@@ -41,11 +41,15 @@ jobs:
           CAMPBELL_GMAIL_APP_PASSWORD: ${{ secrets.CAMPBELL_GMAIL_APP_PASSWORD }}
         run: python fetch_campbell.py
 
+      - name: Rebuild index.html with all price data
+        run: python -c "from fetch_prices import update_index_html, build_js_data; import json; data=json.load(open('prices.json')); update_index_html(data)"
+
+
       - name: Commit updated prices
         run: |
           git config user.name "actions-user"
           git config user.email "actions@github.com"
-          git add prices.json
+          git add prices.json index.html
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
