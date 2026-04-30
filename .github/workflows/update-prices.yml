@@ -45,12 +45,6 @@ jobs:
         run: |
           git config user.name "actions-user"
           git config user.email "actions@github.com"
-          # Save the current prices.json with all updates
-          cp prices.json /tmp/prices_updated.json
-          # Pull latest changes from remote
-          git pull origin main --no-rebase
-          # Restore our updated prices.json (it already contains all data)
-          cp /tmp/prices_updated.json prices.json
           git add prices.json
           if git diff --cached --quiet; then
             echo "No changes to commit"
