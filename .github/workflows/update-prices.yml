@@ -45,12 +45,16 @@ jobs:
         run: |
           git config user.name "actions-user"
           git config user.email "actions@github.com"
+          git fetch origin main
+          git checkout main
           git add prices.json
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
+            git stash
+            git pull --rebase origin main
+            git stash pop
+            git add prices.json
             git commit -m "Auto-update gas prices $(date +%Y-%m-%d)"
-            git fetch origin main
-            git rebase origin/main
             git push
           fi
