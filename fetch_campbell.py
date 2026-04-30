@@ -13,10 +13,10 @@ GMAIL_APP_PASSWORD = os.environ['CAMPBELL_GMAIL_APP_PASSWORD']
 CAMPBELL_STORE_KEY = 'pn'
 
 def fetch_campbell_emails():
-        mail = imaplib.IMAP4_SSL('imap.gmail.com')
-        try:
-                    mail.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-except Exception as e:
+    mail = imaplib.IMAP4_SSL('imap.gmail.com')
+    try:
+        mail.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+    except Exception as e:
         print(f'Campbell: Login failed: {e}')
         mail.logout()
         return []
