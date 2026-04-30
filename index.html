@@ -219,7 +219,7 @@ function renderCalendar(){
     var dn=document.createElement('div');dn.className='day-num';dn.textContent=d;c.appendChild(dn);
     var pE=D[ds]||{},pG=GD[ds]||{},pC=CD[ds]||{},p=Object.assign({},pE,pG,pC),aA=AS.ae||AS.am||AS.mb||AS.ib||AS.bs||AS.cs||AS.co||AS.ss||AS.gw||AS.ge||AS.gr||AS.gc||AS.gh||AS.gb||AS.pn;
     if(p&&aA){
-      ['ae','am','mb','ib','bs','cs','co','ss','gw','ge','gr','gc','gh','gb'].filter(function(k){return AS[k];}).forEach(function(sk){
+      ['ae','am','mb','ib','bs','cs','co','ss','gw','ge','gr','gc','gh','gb','pn'].filter(function(k){return AS[k];}).forEach(function(sk){
         var sp=isLavigneStore(sk)?p[sk+'_'+CK]:p[sk];if(!sp)return;
         var en=document.createElement('div');en.className='price-entry';
         var sl=document.createElement('div');sl.className='store-label '+sk;sl.textContent=sk.toUpperCase();en.appendChild(sl);
@@ -238,7 +238,7 @@ function renderCalendar(){
 function renderSummary(){
   var sb=document.getElementById('summaryBar');sb.innerHTML='';
   var types=[['reg','E10 Regular Unleaded'],['sup','E10 Super Unleaded'],['die','Highway ULSD'],['mid','E10 Midgrade 89'],['prem','E10 Premium 93']];
-  var sts=['ae','am','mb','ib','bs','cs','co','ss','gw','ge','gr','gc','gh','gb'].filter(function(k){return AS[k];});
+  var sts=['ae','am','mb','ib','bs','cs','co','ss','gw','ge','gr','gc','gh','gb','pn'].filter(function(k){return AS[k];});
   var dim=new Date(CY,CM+1,0).getDate();
   types.forEach(function(tp){
     var vals=[];
