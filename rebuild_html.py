@@ -27,5 +27,15 @@ def update_index_html(prices_data):
 if __name__ == '__main__':
     with open('prices.json', 'r') as f:
         prices_data = json.load(f)
+    # Migrate 'dsl' -> 'die' in pn data for correct calendar display
+    changed = False
+    for date, stores in prices_data.items():
+        if 'pn' in stores and 'dsl' in stores['pn']:
+            stores['pn']['die'] = stores['pn'].pop('dsl')
+            changed = True
+    if changed:
+        with open('prices.json', 'w') as f:
+            json.dump(prices_data, f, indent=2, sort_keys=True)
+        print('Migrated dsl->die in prices.json')
     update_index_html(prices_data)
     print('Done! Total dates: {}'.format(len(prices_data)))
