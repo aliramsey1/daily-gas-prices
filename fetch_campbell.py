@@ -107,7 +107,7 @@ def parse_body_prices(msg):
     dsl_match = re.search(r'Diesel\s+Clr\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)', body_text, re.IGNORECASE)
     if dsl_match:
         prices['die'] = float(dsl_match.group(3))
-        print(f'Campbell: Body dsl={prices["dsl"]}')
+        print(f'Campbell: Body dsl={prices["die"]}')
     if prices:
         print(f'Campbell: Body prices={prices}')
         return prices, email_date
@@ -153,7 +153,7 @@ def parse_pdf_prices(pdf_bytes, debug=False):
                 nums = re.findall(r'\d+\.\d{4,6}', check_line)
                 if len(nums) >= 3:
                     prices['die'] = float(nums[-1])
-                    print(f'Campbell: PDF dsl={prices["dsl"]}')
+                    print(f'Campbell: PDF dsl={prices["die"]}')
                     break
     print(f'Campbell: PDF prices={prices}, date={pdf_date}')
     return prices, pdf_date
