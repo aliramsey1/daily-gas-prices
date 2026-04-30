@@ -106,7 +106,7 @@ def parse_body_prices(msg):
         print(f'Campbell: Body prem={prices["prem"]}')
     dsl_match = re.search(r'Diesel\s+Clr\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)', body_text, re.IGNORECASE)
     if dsl_match:
-        prices['dsl'] = float(dsl_match.group(3))
+        prices['die'] = float(dsl_match.group(3))
         print(f'Campbell: Body dsl={prices["dsl"]}')
     if prices:
         print(f'Campbell: Body prices={prices}')
@@ -152,7 +152,7 @@ def parse_pdf_prices(pdf_bytes, debug=False):
             for check_line in text_lines[i:i+5]:
                 nums = re.findall(r'\d+\.\d{4,6}', check_line)
                 if len(nums) >= 3:
-                    prices['dsl'] = float(nums[-1])
+                    prices['die'] = float(nums[-1])
                     print(f'Campbell: PDF dsl={prices["dsl"]}')
                     break
     print(f'Campbell: PDF prices={prices}, date={pdf_date}')
