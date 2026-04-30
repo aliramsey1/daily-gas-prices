@@ -42,31 +42,7 @@ jobs:
         run: python fetch_campbell.py
 
       - name: Rebuild index.html with all price data
-        run: |
-          python << 'EOF'
-import json, re
-with open('prices.json', 'r') as f:
-    prices_data = json.load(f)
-date_keys = sorted(prices_data.keys())
-lines_out = ['var D={']
-for i, dk in enumerate(date_keys):
-    stores = prices_data[dk]
-    store_parts = []
-    for sc, prods in stores.items():
-        prod_parts = ['"{}":{}' .format(pk, pv) for pk, pv in prods.items()]
-        store_parts.append('"{}":{{{}}}' .format(sc, ','.join(prod_parts)))
-    comma = ',' if i < len(date_keys) - 1 else ''
-    lines_out.append('"{}":{{{}}}{}' .format(dk, ','.join(store_parts), comma))
-lines_out.append('};')
-js_data = '\n'.join(lines_out)
-with open('index.html', 'r', encoding='utf-8') as f:
-    html = f.read()
-html = re.sub(r'var D=\{[\s\S]*?\};', js_data, html)
-with open('index.html', 'w', encoding='utf-8') as f:
-    f.write(html)
-print('Rebuilt index.html with all price data including Pop N Go')
-EOF
-
+        run: python rebuild_html.py
 
       - name: Commit updated prices
         run: |
