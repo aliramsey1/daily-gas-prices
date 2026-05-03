@@ -56,52 +56,55 @@ def guillory_login():
     r1 = session.get(login_url)
     html1 = decode_html(r1)
     print('  Step1 GET login: status=' + str(r1.status_code) + ', len=' + str(len(html1)))
-    print('  Cookies after Step1: ' + str(list(session.cookies.keys())))
 
     soup1 = BeautifulSoup(html1, 'html.parser')
     csrf_input = soup1.find('input', {'name': 'csrf_token'})
     csrf_value = csrf_input['value'] if csrf_input else ''
     user_app_id_input = soup1.find('input', {'name': 'user_app_id'})
     user_app_id_value = user_app_id_input['value'] if user_app_id_input else '0'
-    print('  CSRF: ' + str(bool(csrf_value)) + ', user_app_id: ' + str(user_app_id_value))
+    redirect_uri_input = soup1.find('input', {'name': 'redirect_uri'})
+    redirect_uri_value = redirect_uri_input['value'] if redirect_uri_input else '/account/?login'
 
-    # Step 2: POST login WITHOUT following redirects to capture cookies
+    print('  CSRF found: ' + str(bool(csrf_value)) + ', csrf_len=' + str(len(csrf_value)))
+    print('  user_app_id: ' + str(user_app_id_value))
+    print('  redirect_uri: ' + str(redirect_uri_value))
+    print('  USERNAME set: ' + str(bool(GUILLORY_USERNAME)) + ', len=' + str(len(GUILLORY_USERNAME)))
+
+    # Step 2: POST login
     session.headers.update({'Referer': login_url, 'Origin': GUILLORY_URL})
     login_payload = {
         'user_app_id': user_app_id_value,
         'account_number': '',
         'csrf_token': csrf_value,
-        'redirect_uri': '',
+        'redirect_uri': redirect_uri_value,
         'user_name': GUILLORY_USERNAME,
         'user_password': GUILLORY_PASSWORD,
-        'user_remember': 'on',
+        'user_remember': '1',
     }
-    r2_raw = session.post(GUILLORY_URL + '/account/', data=login_payload, allow_redirects=False)
-    print('  Step2a POST (no redirect): status=' + str(r2_raw.status_code) + ', location=' + str(r2_raw.headers.get('Location', 'none')))
-    print('  Cookies after Step2a: ' + str(list(session.cookies.keys())))
-    print('  Set-Cookie header: ' + str(r2_raw.headers.get('Set-Cookie', 'none')[:200]))
-
-    # Now follow the redirect manually
-    redirect_url = r2_raw.headers.get('Location', GUILLORY_URL + '/account/')
-    if not redirect_url.startswith('http'):
-        redirect_url = GUILLORY_URL + redirect_url
-    session.headers.update({'Referer': GUILLORY_URL + '/account/', 'Origin': GUILLORY_URL})
-    r2 = session.get(redirect_url)
+    r2 = session.post(GUILLORY_URL + '/account/', data=login_payload, allow_redirects=True)
     html2 = decode_html(r2)
-    print('  Step2b GET redirect: status=' + str(r2.status_code) + ', url=' + str(r2.url) + ', len=' + str(len(html2)))
-    print('  Cookies after Step2b: ' + str(list(session.cookies.keys())))
+    print('  Step2 POST login: status=' + str(r2.status_code) + ', final_url=' + str(r2.url) + ', len=' + str(len(html2)))
 
-    logged_in = ('logout' in html2.lower() or 'price-history' in html2 or 'Account Summary' in html2)
-    print('  Logged in indicator: ' + str(logged_in))
-    if not logged_in:
-        print('  ERROR: Login failed! Snippet: ' + html2[:200])
+    # Check login success indicators
+    has_logout = 'logout' in html2.lower()
+    has_account_summary = 'Account Summary' in html2
+    has_login_form = ('user_password' in html2 or 'login-container' in html2)
+    print('  has_logout=' + str(has_logout) + ', has_account_summary=' + str(has_account_summary) + ', has_login_form=' + str(has_login_form))
+
+    if has_login_form:
+        # Login failed - check if there's an error message
+        soup2 = BeautifulSoup(html2, 'html.parser')
+        err = soup2.find(class_='alert-danger') or soup2.find(class_='error') or soup2.find(class_='alert')
+        err_text = err.get_text(strip=True)[:100] if err else 'no error msg found'
+        print('  LOGIN FAILED. Error: ' + err_text)
+        print('  Snippet: ' + html2[5000:5200].replace('\n', ' ').replace('  ', ' '))
         return session, '22'
 
-    # Extract user_id from the account page
+    # Extract user_id
     soup2 = BeautifulSoup(html2, 'html.parser')
     uid_input = soup2.find('input', {'name': 'user_id'})
     user_id = uid_input['value'] if uid_input else '22'
-    print('  user_id: "' + str(user_id) + '"')
+    print('  user_id: ' + str(user_id))
     print('  Login SUCCESS')
     return session, user_id
 
@@ -133,26 +136,36 @@ def fetch_guillory_prices(session, user_id, account_number, days=90):
         },
     )
     html = decode_html(r)
-    print('  POST ' + account_number + ': status=' + str(r.status_code) + ', len=' + str(len(html)) + ', url=' + str(r.url))
-    print('  Cookies when posting: ' + str(list(session.cookies.keys())))
+    print('  POST ' + account_number + ': status=' + str(r.status_code) + ', len=' + str(len(html)))
 
     # Check if we got the login page back
     is_login = ('login-container' in html or 'user_password' in html)
     if is_login:
         print('  Got login page! Session lost.')
-        print('  Login snippet: ' + html[:150])
         return ''
 
-    snippet = html[:150].replace('\n', ' ').replace('\r', '')
-    print('  HTML snippet: ' + snippet)
     return html
 
 
 def parse_guillory_html(html):
-    """Parse price-history HTML table into {date_str: {prod_key: price}}."""
+    """Parse price-history HTML into {date_str: {prod_key: price}}."""
     if not html:
         return {}
 
+    # Primary: look for inline DataTables data in script tag
+    for pattern in [r"'data':\s*(\[\[.*?\]\])", r'"data":\s*(\[\[.*?\]\])']:
+        m = re.search(pattern, html, re.DOTALL)
+        if m:
+            try:
+                data = json.loads(m.group(1))
+                result = _rows_to_result(data)
+                if result:
+                    print('  Parsed via JS data: ' + str(len(result)) + ' dates, ' + str(sum(len(v) for v in result.values())) + ' store-dates')
+                    return result
+            except Exception as e:
+                print('  JS data parse error: ' + str(e))
+
+    # Fallback: HTML table parser
     soup = BeautifulSoup(html, 'html.parser')
     tables = soup.find_all('table')
     if tables:
@@ -160,40 +173,34 @@ def parse_guillory_html(html):
         if result:
             return result
 
-    # Fallback: try JS data patterns
-    for pattern in [r"'data':\s*(\[\[.*?\]\])", r'"data":\s*(\[\[.*?\]\])']:
-        m = re.search(pattern, html, re.DOTALL)
-        if m:
-            try:
-                return _rows_to_result(json.loads(m.group(1)))
-            except Exception:
-                pass
-
     print('  No data found. HTML length=' + str(len(html)))
-    snippet = html[:300].encode('ascii', errors='replace').decode()
-    print('  Snippet: ' + snippet)
+    print('  Snippet: ' + html[:200].encode('ascii', errors='replace').decode())
     return {}
 
 
 def _rows_to_result(data):
+    # Row: [date, time, loc_num, loc_name, supplier?, product, base, surcharge, taxes, total, change]
     result = {}
+    skipped = 0
     for row in data:
         try:
             d = datetime.datetime.strptime(row[0], '%m/%d/%Y').date()
             prod_key = GUILLORY_PRODUCTS.get(row[5])
             if not prod_key:
+                skipped += 1
                 continue
             date_str = d.isoformat()
             if date_str not in result:
                 result[date_str] = {}
             result[date_str][prod_key] = float(row[9])
         except Exception:
-            pass
+            skipped += 1
+    if skipped:
+        print('  Skipped ' + str(skipped) + ' rows (product not in map)')
     return result
 
 
 def _tables_to_result(tables):
-    # Columns: Date(0) | Time(1) | Product(2) | Base(3) | Surcharge(4) | Taxes(5) | Total(6) | Change(7)
     result = {}
     for table in tables:
         rows = table.find_all('tr')
@@ -231,7 +238,7 @@ def _tables_to_result(tables):
 
 def fetch_all_guillory():
     session, user_id = guillory_login()
-    print('  Using user_id: "' + str(user_id) + '"')
+    print('  Using user_id: ' + str(user_id))
     all_data = {}
     for account_number, store_key in GUILLORY_STORES.items():
         print('  Fetching ' + store_key + ' (' + account_number + ')...')
