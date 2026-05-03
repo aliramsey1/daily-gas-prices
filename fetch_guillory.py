@@ -26,27 +26,44 @@ GUILLORY_PRODUCTS = {
     'ULTRA L/S CLEAR DIESEL FUEL': 'die',
 }
 
+def get_text(response):
+    """Decode response content properly regardless of encoding."""
+    # Try to get text - requests should handle gzip automatically
+    # but we also try manual decode as fallback
+    try:
+        return response.text
+    except Exception:
+        try:
+            import gzip
+            return gzip.decompress(response.content).decode('utf-8')
+        except Exception:
+            return response.content.decode('utf-8', errors='replace')
+
 def guillory_login():
     """Log in and return (session, user_id) ready for price-history POSTs."""
     session = requests.Session()
+    # IMPORTANT: Do NOT send Accept-Encoding to avoid gzip issues
     session.headers.update({
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
         'Connection': 'keep-alive',
         'Upgrade-Insecure-Requests': '1',
     })
+    # Explicitly disable automatic decompression to avoid encoding issues
+    session.headers['Accept-Encoding'] = 'identity'
 
     # GET login page - grab CSRF token
     login_url = GUILLORY_URL + '/account/?login'
     r1 = session.get(login_url)
-    print('  Step1 GET login: status=' + str(r1.status_code))
-    soup = BeautifulSoup(r1.text, 'html.parser')
+    print('  Step1 GET login: status=' + str(r1.status_code) + ', encoding=' + str(r1.encoding))
+    html1 = get_text(r1)
+    soup = BeautifulSoup(html1, 'html.parser')
     csrf_input = soup.find('input', {'name': 'csrf_token'})
     csrf_value = csrf_input['value'] if csrf_input else ''
     user_app_id_input = soup.find('input', {'name': 'user_app_id'})
     user_app_id_value = user_app_id_input['value'] if user_app_id_input else '0'
+    print('  CSRF found: ' + str(bool(csrf_value)))
 
     # POST login
     session.headers.update({'Referer': login_url, 'Origin': GUILLORY_URL})
@@ -62,24 +79,25 @@ def guillory_login():
     r2 = session.post(GUILLORY_URL + '/account/', data=login_payload, allow_redirects=True)
     print('  Step2 POST login: status=' + str(r2.status_code) + ', URL=' + str(r2.url))
 
-    # GET price-history page to grab the user_id hidden field
+    # GET price-history page to confirm session + grab user_id
     session.headers.update({'Referer': GUILLORY_URL + '/account/'})
     for h in ('Content-Type', 'X-Requested-With'):
         session.headers.pop(h, None)
 
     r3 = session.get(GUILLORY_URL + '/account/price-history')
-    print('  Step3 GET price-history: status=' + str(r3.status_code) + ', len=' + str(len(r3.text)))
+    html3 = get_text(r3)
+    print('  Step3 GET price-history: status=' + str(r3.status_code) + ', len=' + str(len(html3)))
 
-    is_login = ('login-container' in r3.text or 'user_password' in r3.text)
+    is_login = ('login-container' in html3 or 'user_password' in html3)
     if is_login:
-        print('  ERROR: Session not persisting - got login page back')
+        print('  ERROR: Session not persisting')
         return session, ''
 
     # Extract user_id from the hidden form field
-    soup3 = BeautifulSoup(r3.text, 'html.parser')
+    soup3 = BeautifulSoup(html3, 'html.parser')
     uid_input = soup3.find('input', {'name': 'user_id'})
     user_id = uid_input['value'] if uid_input else ''
-    print('  Extracted user_id: ' + str(user_id))
+    print('  Extracted user_id: "' + str(user_id) + '"')
     print('  Login + session: SUCCESS')
     return session, user_id
 
@@ -112,53 +130,51 @@ def fetch_guillory_prices(session, user_id, account_number, days=90):
         data=payload,
         headers=post_headers
     )
-    print('  POST ' + account_number + ': status=' + str(r.status_code) + ', len=' + str(len(r.text)))
+    html = get_text(r)
+    print('  POST ' + account_number + ': status=' + str(r.status_code) + ', encoding=' + str(r.encoding) + ', len=' + str(len(html)))
 
-    is_login = ('login-container' in r.text or 'user_password' in r.text)
+    is_login = ('login-container' in html or 'user_password' in html)
     if is_login:
-        print('  Got login page - session expired for ' + account_number)
+        print('  Got login page for ' + account_number)
         return ''
 
-    return r.text
+    return html
 
 def parse_guillory_html(html):
     if not html:
         return {}
 
-    # The Guillory site uses a server-rendered HTML table with DataTables
+    # The page has an HTML table with DataTables
     # Columns: Date | Time | Product | Base | Surcharge | Taxes | Total | Change
     soup = BeautifulSoup(html, 'html.parser')
     tables = soup.find_all('table')
     if tables:
-        print('  Found ' + str(len(tables)) + ' table(s), parsing...')
+        print('  Found ' + str(len(tables)) + ' table(s)')
         result = _tables_to_result(tables)
         if result:
-            print('  Table parse success: ' + str(len(result)) + ' dates')
             return result
 
-    # Fallback: DataTable single-quote JS pattern
+    # Fallback: DataTable JS patterns
     m = re.search(r"'data':\s*(\[\[.*?\]\])", html, re.DOTALL)
     if m:
-        print('  Matched single-quote DataTable')
+        print('  Matched single-quote DataTable JS')
         try:
             return _rows_to_result(json.loads(m.group(1)))
         except Exception as e:
             print('  Error: ' + str(e))
 
-    # Fallback: DataTable double-quote JS pattern
     m = re.search(r'"data":\s*(\[\[.*?\]\])', html, re.DOTALL)
     if m:
-        print('  Matched double-quote DataTable')
+        print('  Matched double-quote DataTable JS')
         try:
             return _rows_to_result(json.loads(m.group(1)))
         except Exception as e:
             print('  Error: ' + str(e))
 
-    print('  No data found. First 600 chars: ' + html[:600])
+    print('  No data found. HTML snippet: ' + html[:400].encode('ascii', errors='replace').decode())
     return {}
 
 def _rows_to_result(data):
-    # Columns: [date, time, loc_id, loc_name, prod_id, product, base, surcharge, taxes, total, change]
     result = {}
     for row in data:
         try:
@@ -178,34 +194,30 @@ def _rows_to_result(data):
     return result
 
 def _tables_to_result(tables):
-    # Table columns (from live inspection): Date | Time | Product | Base | Surcharge | Taxes | Total | Change
+    # Table: Date(0) | Time(1) | Product(2) | Base(3) | Surcharge(4) | Taxes(5) | Total(6) | Change(7)
     result = {}
     for table in tables:
         rows = table.find_all('tr')
         if len(rows) < 2:
             continue
         headers = [th.get_text(strip=True).lower() for th in rows[0].find_all(['th', 'td'])]
-        print('  Table headers: ' + str(headers))
+        print('  Headers: ' + str(headers))
 
-        # Find column indices by header name
+        # Find columns
         date_idx = next((i for i, h in enumerate(headers) if 'date' in h or 'eff' in h), None)
         prod_idx = next((i for i, h in enumerate(headers) if 'product' in h), None)
-        # Total is 7th column (index 6) in this table: Date|Time|Product|Base|Surcharge|Taxes|Total|Change
         total_idx = next((i for i, h in enumerate(headers) if 'total' in h), None)
 
         if date_idx is None or prod_idx is None or total_idx is None:
-            # Try fixed column positions (Date=0, Product=2, Total=6)
             if len(headers) >= 7:
-                date_idx = 0
-                prod_idx = 2
-                total_idx = 6
-                print('  Using fixed column positions: date=0, prod=2, total=6')
+                date_idx, prod_idx, total_idx = 0, 2, 6
+                print('  Using fixed positions: date=0, product=2, total=6')
             else:
-                print('  Cannot determine columns from headers: ' + str(headers))
                 continue
 
         data_rows = rows[1:]
-        print('  Parsing ' + str(len(data_rows)) + ' data rows')
+        print('  Parsing ' + str(len(data_rows)) + ' rows with date=' + str(date_idx) + ' prod=' + str(prod_idx) + ' total=' + str(total_idx))
+        parsed = 0
         for row in data_rows:
             cells = [td.get_text(strip=True) for td in row.find_all('td')]
             if len(cells) <= max(date_idx, prod_idx, total_idx):
@@ -214,6 +226,8 @@ def _tables_to_result(tables):
                 date_raw = cells[date_idx]
                 product = cells[prod_idx].upper()
                 total_str = cells[total_idx].replace('$', '').replace(',', '').strip()
+                if not total_str:
+                    continue
                 total = float(total_str)
                 d = datetime.datetime.strptime(date_raw, '%m/%d/%Y').date()
                 date_str = d.isoformat()
@@ -223,8 +237,10 @@ def _tables_to_result(tables):
                 if date_str not in result:
                     result[date_str] = {}
                 result[date_str][prod_key] = total
+                parsed += 1
             except Exception as e:
-                print('  Table row error: ' + str(e) + ' cells=' + str(cells[:4]))
+                pass
+        print('  Parsed ' + str(parsed) + ' records into ' + str(len(result)) + ' dates')
     return result
 
 def fetch_all_guillory():
@@ -241,7 +257,7 @@ def fetch_all_guillory():
                     all_data[date_str] = {}
                 all_data[date_str][store_key] = prods
         except Exception as e:
-            print('  Error fetching ' + store_key + ': ' + str(e))
+            print('  Error ' + store_key + ': ' + str(e))
     return all_data
 
 def update_guillory_in_prices_json(guillory_data):
