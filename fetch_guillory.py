@@ -26,37 +26,36 @@ GUILLORY_PRODUCTS = {
     'ULTRA L/S CLEAR DIESEL FUEL': 'die',
 }
 
-def get_csrf_from_page(session, url):
-    r = session.get(url)
-    soup = BeautifulSoup(r.text, 'html.parser')
-    csrf = soup.find('input', {'name': 'csrf_token'})
-    return csrf['value'] if csrf else ''
-
 def guillory_login():
+    """Log in and return (session, csrf_token) ready for price-history POSTs."""
     session = requests.Session()
+    # Use a real browser User-Agent and standard browser headers
     session.headers.update({
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
         'Accept-Encoding': 'gzip, deflate, br',
         'Connection': 'keep-alive',
         'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'same-origin',
     })
 
-    # Step 1: GET login page for CSRF token
+    # Step 1: GET login page - grab CSRF token
     login_url = GUILLORY_URL + '/account/?login'
-    r = session.get(login_url)
-    print('  Step1 GET login: status=' + str(r.status_code))
-    soup = BeautifulSoup(r.text, 'html.parser')
-    csrf = soup.find('input', {'name': 'csrf_token'})
-    csrf_value = csrf['value'] if csrf else ''
-    user_app_id = soup.find('input', {'name': 'user_app_id'})
-    user_app_id_value = user_app_id['value'] if user_app_id else '0'
-    print('  CSRF token: ' + csrf_value[:20] + '...')
+    r1 = session.get(login_url)
+    print('  Step1 GET login: status=' + str(r1.status_code))
+    soup = BeautifulSoup(r1.text, 'html.parser')
+    csrf_input = soup.find('input', {'name': 'csrf_token'})
+    csrf_value = csrf_input['value'] if csrf_input else ''
+    user_app_id_input = soup.find('input', {'name': 'user_app_id'})
+    user_app_id_value = user_app_id_input['value'] if user_app_id_input else '0'
+    print('  CSRF found: ' + str(bool(csrf_value)))
 
-    # Step 2: POST login with Referer header
-    session.headers.update({'Referer': login_url})
-    payload = {
+    # Step 2: POST login credentials
+    session.headers.update({'Referer': login_url, 'Origin': GUILLORY_URL})
+    login_payload = {
         'user_app_id': user_app_id_value,
         'account_number': '',
         'csrf_token': csrf_value,
@@ -65,48 +64,43 @@ def guillory_login():
         'user_password': GUILLORY_PASSWORD,
         'user_remember': 'on',
     }
-    r2 = session.post(GUILLORY_URL + '/account/', data=payload, allow_redirects=True)
-    print('  Step2 POST login: status=' + str(r2.status_code) + ', final URL: ' + str(r2.url))
+    r2 = session.post(GUILLORY_URL + '/account/', data=login_payload, allow_redirects=True)
+    print('  Step2 POST login: status=' + str(r2.status_code) + ', URL=' + str(r2.url))
 
-    logged_in = ('Price History' in r2.text or 'Account Summary' in r2.text
-                 or 'Fuel Price' in r2.text or 'price-history' in r2.text
-                 or 'logout' in r2.text.lower())
-    print('  Login success indicator: ' + str(logged_in))
-    if not logged_in:
-        print('  WARNING: Login may have failed. Response snippet: ' + r2.text[:300])
+    # Step 3: GET price-history page WITH the established session
+    # This is critical - we must NOT add XMLHttpRequest header here
+    session.headers.update({
+        'Referer': GUILLORY_URL + '/account/',
+        'Sec-Fetch-Site': 'same-origin',
+    })
+    # Remove any headers that might break the session
+    for h in ('X-Requested-With', 'Content-Type'):
+        session.headers.pop(h, None)
 
-    # Step 3: GET account summary page to warm up session
-    session.headers.update({'Referer': str(r2.url)})
-    r3 = session.get(GUILLORY_URL + '/account/')
-    print('  Step3 GET account/: status=' + str(r3.status_code) + ', URL: ' + str(r3.url))
-    has_price_history_link = 'price-history' in r3.text
-    print('  Account page has price-history link: ' + str(has_price_history_link))
+    r3 = session.get(GUILLORY_URL + '/account/price-history')
+    print('  Step3 GET price-history: status=' + str(r3.status_code) + ', length=' + str(len(r3.text)))
 
-    # Step 4: GET price-history page before POSTing to it
-    session.headers.update({'Referer': GUILLORY_URL + '/account/'})
-    r4 = session.get(GUILLORY_URL + '/account/price-history')
-    print('  Step4 GET price-history: status=' + str(r4.status_code) + ', URL: ' + str(r4.url))
-    print('  price-history page length: ' + str(len(r4.text)))
-    # Check if we got the actual page or the login redirect
-    if 'login-container' in r4.text or 'form-login' in r4.text:
-        print('  WARNING: price-history page returned login form - session not persisting!')
-    else:
-        print('  price-history page looks authenticated')
+    is_login_page = ('login-container' in r3.text or 'form-login' in r3.text
+                     or 'user_password' in r3.text)
+    print('  Is login page: ' + str(is_login_page))
 
-    return session
+    if is_login_page:
+        print('  WARNING: Session not persisting to price-history. Snippet: ' + r3.text[:400])
+        return session, ''
 
-def fetch_guillory_prices(session, account_number, days=90):
+    # Extract CSRF token from the authenticated price-history page
+    soup3 = BeautifulSoup(r3.text, 'html.parser')
+    csrf3 = soup3.find('input', {'name': 'csrf_token'})
+    csrf_for_post = csrf3['value'] if csrf3 else ''
+    print('  CSRF from price-history page: ' + str(bool(csrf_for_post)))
+    print('  Guillory login + session setup: SUCCESS')
+    return session, csrf_for_post
+
+def fetch_guillory_prices(session, csrf_token, account_number, days=90):
     today = datetime.date.today()
     start = today - datetime.timedelta(days=days)
     date_start = start.strftime('%m/%d/%Y')
     date_end = today.strftime('%m/%d/%Y')
-
-    # Get fresh CSRF token from the price-history page
-    r_get = session.get(GUILLORY_URL + '/account/price-history')
-    soup = BeautifulSoup(r_get.text, 'html.parser')
-    csrf = soup.find('input', {'name': 'csrf_token'})
-    csrf_value = csrf['value'] if csrf else ''
-    print('  Fresh CSRF for ' + account_number + ': ' + (csrf_value[:15] + '...' if csrf_value else 'NONE - login page returned!'))
 
     payload = {
         'search': '1',
@@ -120,48 +114,63 @@ def fetch_guillory_prices(session, account_number, days=90):
         'terminal_id': '',
         'product_id': '',
     }
-    if csrf_value:
-        payload['csrf_token'] = csrf_value
+    if csrf_token:
+        payload['csrf_token'] = csrf_token
 
-    session.headers.update({
+    # POST with Referer set to the price-history page (same-origin)
+    # Do NOT add X-Requested-With - keep as a normal form POST
+    post_headers = {
         'Referer': GUILLORY_URL + '/account/price-history',
         'Content-Type': 'application/x-www-form-urlencoded',
-        'X-Requested-With': 'XMLHttpRequest',
-    })
+        'Origin': GUILLORY_URL,
+    }
+    r = session.post(
+        GUILLORY_URL + '/account/price-history',
+        data=payload,
+        headers=post_headers
+    )
+    print('  POST ' + account_number + ': status=' + str(r.status_code) + ', length=' + str(len(r.text)))
 
-    r = session.post(GUILLORY_URL + '/account/price-history', data=payload)
-    print('  POST price-history: status=' + str(r.status_code) + ', length=' + str(len(r.text)))
+    is_login_page = ('login-container' in r.text or 'user_password' in r.text)
+    if is_login_page:
+        print('  Got login page for ' + account_number + ' - session expired')
+        return ''
 
-    # Check if we got login page again
-    if 'login-container' in r.text or 'form-login' in r.text:
-        print('  STILL getting login page - trying without X-Requested-With header')
-        del session.headers['X-Requested-With']
-        r = session.post(GUILLORY_URL + '/account/price-history', data=payload)
-        print('  Retry POST: status=' + str(r.status_code) + ', length=' + str(len(r.text)))
-
-    print('  First 500 chars: ' + r.text[:500])
+    print('  First 200 chars: ' + r.text[:200].replace('\n', ' '))
     return r.text
 
 def parse_guillory_html(html):
-    # Strategy 1: single-quote DataTable
+    if not html:
+        return {}
+
+    # Strategy 1: DataTable single-quote 'data': [[...]]
     m = re.search(r"'data':\s*(\[\[.*?\]\])", html, re.DOTALL)
     if m:
         print('  Matched: single-quote DataTable')
         try:
             return _rows_to_result(json.loads(m.group(1)))
         except Exception as e:
-            print('  Parse error: ' + str(e))
+            print('  Error: ' + str(e))
 
-    # Strategy 2: double-quote DataTable
+    # Strategy 2: DataTable double-quote "data": [[...]]
     m = re.search(r'"data":\s*(\[\[.*?\]\])', html, re.DOTALL)
     if m:
         print('  Matched: double-quote DataTable')
         try:
             return _rows_to_result(json.loads(m.group(1)))
         except Exception as e:
-            print('  Parse error: ' + str(e))
+            print('  Error: ' + str(e))
 
-    # Strategy 3: HTML table
+    # Strategy 3: Array of arrays with date as first element
+    m = re.search(r'(\[\s*\[\s*"\d{1,2}/\d{1,2}/\d{4}".*?\]\s*\])', html, re.DOTALL)
+    if m:
+        print('  Matched: array with date pattern')
+        try:
+            return _rows_to_result(json.loads(m.group(1)))
+        except Exception as e:
+            print('  Error: ' + str(e))
+
+    # Strategy 4: HTML table
     soup = BeautifulSoup(html, 'html.parser')
     tables = soup.find_all('table')
     if tables:
@@ -170,7 +179,7 @@ def parse_guillory_html(html):
         if result:
             return result
 
-    # Strategy 4: pure JSON
+    # Strategy 5: pure JSON
     try:
         data = json.loads(html)
         print('  Matched: pure JSON')
@@ -183,16 +192,7 @@ def parse_guillory_html(html):
     except Exception:
         pass
 
-    # Strategy 5: any JS array of arrays with date-like first element
-    m = re.search(r'(\[\["\d{1,2}/\d{1,2}/\d{4}".*?\]\])', html, re.DOTALL)
-    if m:
-        print('  Matched: JS array with date pattern')
-        try:
-            return _rows_to_result(json.loads(m.group(1)))
-        except Exception as e:
-            print('  Parse error: ' + str(e))
-
-    print('  No data pattern found. Snippet: ' + html[:800])
+    print('  No data pattern matched. First 600 chars: ' + html[:600])
     return {}
 
 def _rows_to_result(data):
@@ -277,12 +277,12 @@ def _tables_to_result(tables):
     return result
 
 def fetch_all_guillory():
-    session = guillory_login()
+    session, csrf_token = guillory_login()
     all_data = {}
     for account_number, store_key in GUILLORY_STORES.items():
         print('  Fetching ' + store_key + ' (' + account_number + ')...')
         try:
-            html = fetch_guillory_prices(session, account_number)
+            html = fetch_guillory_prices(session, csrf_token, account_number)
             prices = parse_guillory_html(html)
             print('  Got ' + str(len(prices)) + ' dates for ' + store_key)
             for date_str, prods in prices.items():
