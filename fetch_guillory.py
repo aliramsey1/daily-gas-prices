@@ -26,19 +26,36 @@ GUILLORY_PRODUCTS = {
     'ULTRA L/S CLEAR DIESEL FUEL': 'die',
 }
 
+def get_csrf_from_page(session, url):
+    r = session.get(url)
+    soup = BeautifulSoup(r.text, 'html.parser')
+    csrf = soup.find('input', {'name': 'csrf_token'})
+    return csrf['value'] if csrf else ''
+
 def guillory_login():
     session = requests.Session()
     session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Referer': GUILLORY_URL + '/account/?login',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
     })
-    r = session.get(GUILLORY_URL + '/account/?login')
-    print('  Login page status: ' + str(r.status_code))
+
+    # Step 1: GET login page for CSRF token
+    login_url = GUILLORY_URL + '/account/?login'
+    r = session.get(login_url)
+    print('  Step1 GET login: status=' + str(r.status_code))
     soup = BeautifulSoup(r.text, 'html.parser')
     csrf = soup.find('input', {'name': 'csrf_token'})
     csrf_value = csrf['value'] if csrf else ''
     user_app_id = soup.find('input', {'name': 'user_app_id'})
     user_app_id_value = user_app_id['value'] if user_app_id else '0'
+    print('  CSRF token: ' + csrf_value[:20] + '...')
+
+    # Step 2: POST login with Referer header
+    session.headers.update({'Referer': login_url})
     payload = {
         'user_app_id': user_app_id_value,
         'account_number': '',
@@ -49,12 +66,33 @@ def guillory_login():
         'user_remember': 'on',
     }
     r2 = session.post(GUILLORY_URL + '/account/', data=payload, allow_redirects=True)
-    print('  Login POST status: ' + str(r2.status_code) + ', URL: ' + str(r2.url))
-    if 'Price History' in r2.text or 'Account Summary' in r2.text or 'Fuel Price' in r2.text:
-        print('Guillory: Logged in successfully')
+    print('  Step2 POST login: status=' + str(r2.status_code) + ', final URL: ' + str(r2.url))
+
+    logged_in = ('Price History' in r2.text or 'Account Summary' in r2.text
+                 or 'Fuel Price' in r2.text or 'price-history' in r2.text
+                 or 'logout' in r2.text.lower())
+    print('  Login success indicator: ' + str(logged_in))
+    if not logged_in:
+        print('  WARNING: Login may have failed. Response snippet: ' + r2.text[:300])
+
+    # Step 3: GET account summary page to warm up session
+    session.headers.update({'Referer': str(r2.url)})
+    r3 = session.get(GUILLORY_URL + '/account/')
+    print('  Step3 GET account/: status=' + str(r3.status_code) + ', URL: ' + str(r3.url))
+    has_price_history_link = 'price-history' in r3.text
+    print('  Account page has price-history link: ' + str(has_price_history_link))
+
+    # Step 4: GET price-history page before POSTing to it
+    session.headers.update({'Referer': GUILLORY_URL + '/account/'})
+    r4 = session.get(GUILLORY_URL + '/account/price-history')
+    print('  Step4 GET price-history: status=' + str(r4.status_code) + ', URL: ' + str(r4.url))
+    print('  price-history page length: ' + str(len(r4.text)))
+    # Check if we got the actual page or the login redirect
+    if 'login-container' in r4.text or 'form-login' in r4.text:
+        print('  WARNING: price-history page returned login form - session not persisting!')
     else:
-        print('Guillory: Login may have failed. Status=' + str(r2.status_code))
-        print('  Response snippet: ' + r2.text[:500])
+        print('  price-history page looks authenticated')
+
     return session
 
 def fetch_guillory_prices(session, account_number, days=90):
@@ -62,6 +100,14 @@ def fetch_guillory_prices(session, account_number, days=90):
     start = today - datetime.timedelta(days=days)
     date_start = start.strftime('%m/%d/%Y')
     date_end = today.strftime('%m/%d/%Y')
+
+    # Get fresh CSRF token from the price-history page
+    r_get = session.get(GUILLORY_URL + '/account/price-history')
+    soup = BeautifulSoup(r_get.text, 'html.parser')
+    csrf = soup.find('input', {'name': 'csrf_token'})
+    csrf_value = csrf['value'] if csrf else ''
+    print('  Fresh CSRF for ' + account_number + ': ' + (csrf_value[:15] + '...' if csrf_value else 'NONE - login page returned!'))
+
     payload = {
         'search': '1',
         'results': '9999',
@@ -74,55 +120,79 @@ def fetch_guillory_prices(session, account_number, days=90):
         'terminal_id': '',
         'product_id': '',
     }
+    if csrf_value:
+        payload['csrf_token'] = csrf_value
+
+    session.headers.update({
+        'Referer': GUILLORY_URL + '/account/price-history',
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'X-Requested-With': 'XMLHttpRequest',
+    })
+
     r = session.post(GUILLORY_URL + '/account/price-history', data=payload)
-    print('  Price-history POST status: ' + str(r.status_code) + ', URL: ' + str(r.url))
-    print('  Response length: ' + str(len(r.text)) + ' chars')
-    print('  Response snippet (first 1000 chars):')
-    print(r.text[:1000])
+    print('  POST price-history: status=' + str(r.status_code) + ', length=' + str(len(r.text)))
+
+    # Check if we got login page again
+    if 'login-container' in r.text or 'form-login' in r.text:
+        print('  STILL getting login page - trying without X-Requested-With header')
+        del session.headers['X-Requested-With']
+        r = session.post(GUILLORY_URL + '/account/price-history', data=payload)
+        print('  Retry POST: status=' + str(r.status_code) + ', length=' + str(len(r.text)))
+
+    print('  First 500 chars: ' + r.text[:500])
     return r.text
 
 def parse_guillory_html(html):
+    # Strategy 1: single-quote DataTable
     m = re.search(r"'data':\s*(\[\[.*?\]\])", html, re.DOTALL)
     if m:
-        print('  Strategy 1 matched (single-quote DataTable)')
+        print('  Matched: single-quote DataTable')
         try:
-            data = json.loads(m.group(1))
-            return _rows_to_result(data)
+            return _rows_to_result(json.loads(m.group(1)))
         except Exception as e:
-            print('  JSON parse error strategy 1: ' + str(e))
+            print('  Parse error: ' + str(e))
 
+    # Strategy 2: double-quote DataTable
     m = re.search(r'"data":\s*(\[\[.*?\]\])', html, re.DOTALL)
     if m:
-        print('  Strategy 2 matched (double-quote DataTable)')
+        print('  Matched: double-quote DataTable')
         try:
-            data = json.loads(m.group(1))
-            return _rows_to_result(data)
+            return _rows_to_result(json.loads(m.group(1)))
         except Exception as e:
-            print('  JSON parse error strategy 2: ' + str(e))
+            print('  Parse error: ' + str(e))
 
+    # Strategy 3: HTML table
     soup = BeautifulSoup(html, 'html.parser')
     tables = soup.find_all('table')
     if tables:
-        print('  Strategy 3: found ' + str(len(tables)) + ' HTML table(s)')
+        print('  Trying HTML tables: ' + str(len(tables)) + ' found')
         result = _tables_to_result(tables)
         if result:
             return result
 
+    # Strategy 4: pure JSON
     try:
         data = json.loads(html)
-        print('  Strategy 4 matched (pure JSON)')
+        print('  Matched: pure JSON')
         if isinstance(data, list):
             return _objects_to_result(data)
         if isinstance(data, dict):
             for key in ('data', 'prices', 'results', 'rows'):
                 if key in data and isinstance(data[key], list):
-                    print('  Strategy 4: using key ' + key)
                     return _objects_to_result(data[key])
     except Exception:
         pass
 
-    print('  Could not find data - full response for debugging:')
-    print(html[:3000])
+    # Strategy 5: any JS array of arrays with date-like first element
+    m = re.search(r'(\[\["\d{1,2}/\d{1,2}/\d{4}".*?\]\])', html, re.DOTALL)
+    if m:
+        print('  Matched: JS array with date pattern')
+        try:
+            return _rows_to_result(json.loads(m.group(1)))
+        except Exception as e:
+            print('  Parse error: ' + str(e))
+
+    print('  No data pattern found. Snippet: ' + html[:800])
     return {}
 
 def _rows_to_result(data):
@@ -141,7 +211,7 @@ def _rows_to_result(data):
                 result[date_str] = {}
             result[date_str][prod_key] = total
         except Exception as e:
-            print('  Row parse error: ' + str(e))
+            print('  Row error: ' + str(e))
     return result
 
 def _objects_to_result(data):
@@ -170,7 +240,7 @@ def _objects_to_result(data):
                 result[date_str] = {}
             result[date_str][prod_key] = total
         except Exception as e:
-            print('  Object parse error: ' + str(e))
+            print('  Object error: ' + str(e))
     return result
 
 def _tables_to_result(tables):
@@ -203,7 +273,7 @@ def _tables_to_result(tables):
                     result[date_str] = {}
                 result[date_str][prod_key] = total
             except Exception as e:
-                print('  Table row parse error: ' + str(e))
+                print('  Table row error: ' + str(e))
     return result
 
 def fetch_all_guillory():
@@ -214,7 +284,7 @@ def fetch_all_guillory():
         try:
             html = fetch_guillory_prices(session, account_number)
             prices = parse_guillory_html(html)
-            print('  Got ' + str(len(prices)) + ' dates')
+            print('  Got ' + str(len(prices)) + ' dates for ' + store_key)
             for date_str, prods in prices.items():
                 if date_str not in all_data:
                     all_data[date_str] = {}
@@ -238,7 +308,7 @@ def update_guillory_in_prices_json(guillory_data):
             if store_key not in existing[date_str]:
                 existing[date_str][store_key] = prods
                 added += 1
-                print('  Added ' + date_str + ' ' + store_key + ': ' + str(prods))
+                print('  Added ' + date_str + ' ' + store_key)
     with open(prices_file, 'w') as f:
         json.dump(existing, f, indent=2, sort_keys=True)
     print('Guillory: ' + str(added) + ' new entries added to prices.json')
