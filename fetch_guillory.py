@@ -27,9 +27,8 @@ GUILLORY_PRODUCTS = {
 }
 
 def guillory_login():
-    """Log in and return (session, csrf_token) ready for price-history POSTs."""
+    """Log in and return (session, user_id) ready for price-history POSTs."""
     session = requests.Session()
-    # Use a real browser User-Agent and standard browser headers
     session.headers.update({
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -37,12 +36,9 @@ def guillory_login():
         'Accept-Encoding': 'gzip, deflate, br',
         'Connection': 'keep-alive',
         'Upgrade-Insecure-Requests': '1',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'same-origin',
     })
 
-    # Step 1: GET login page - grab CSRF token
+    # GET login page - grab CSRF token
     login_url = GUILLORY_URL + '/account/?login'
     r1 = session.get(login_url)
     print('  Step1 GET login: status=' + str(r1.status_code))
@@ -51,9 +47,8 @@ def guillory_login():
     csrf_value = csrf_input['value'] if csrf_input else ''
     user_app_id_input = soup.find('input', {'name': 'user_app_id'})
     user_app_id_value = user_app_id_input['value'] if user_app_id_input else '0'
-    print('  CSRF found: ' + str(bool(csrf_value)))
 
-    # Step 2: POST login credentials
+    # POST login
     session.headers.update({'Referer': login_url, 'Origin': GUILLORY_URL})
     login_payload = {
         'user_app_id': user_app_id_value,
@@ -67,36 +62,28 @@ def guillory_login():
     r2 = session.post(GUILLORY_URL + '/account/', data=login_payload, allow_redirects=True)
     print('  Step2 POST login: status=' + str(r2.status_code) + ', URL=' + str(r2.url))
 
-    # Step 3: GET price-history page WITH the established session
-    # This is critical - we must NOT add XMLHttpRequest header here
-    session.headers.update({
-        'Referer': GUILLORY_URL + '/account/',
-        'Sec-Fetch-Site': 'same-origin',
-    })
-    # Remove any headers that might break the session
-    for h in ('X-Requested-With', 'Content-Type'):
+    # GET price-history page to grab the user_id hidden field
+    session.headers.update({'Referer': GUILLORY_URL + '/account/'})
+    for h in ('Content-Type', 'X-Requested-With'):
         session.headers.pop(h, None)
 
     r3 = session.get(GUILLORY_URL + '/account/price-history')
-    print('  Step3 GET price-history: status=' + str(r3.status_code) + ', length=' + str(len(r3.text)))
+    print('  Step3 GET price-history: status=' + str(r3.status_code) + ', len=' + str(len(r3.text)))
 
-    is_login_page = ('login-container' in r3.text or 'form-login' in r3.text
-                     or 'user_password' in r3.text)
-    print('  Is login page: ' + str(is_login_page))
-
-    if is_login_page:
-        print('  WARNING: Session not persisting to price-history. Snippet: ' + r3.text[:400])
+    is_login = ('login-container' in r3.text or 'user_password' in r3.text)
+    if is_login:
+        print('  ERROR: Session not persisting - got login page back')
         return session, ''
 
-    # Extract CSRF token from the authenticated price-history page
+    # Extract user_id from the hidden form field
     soup3 = BeautifulSoup(r3.text, 'html.parser')
-    csrf3 = soup3.find('input', {'name': 'csrf_token'})
-    csrf_for_post = csrf3['value'] if csrf3 else ''
-    print('  CSRF from price-history page: ' + str(bool(csrf_for_post)))
-    print('  Guillory login + session setup: SUCCESS')
-    return session, csrf_for_post
+    uid_input = soup3.find('input', {'name': 'user_id'})
+    user_id = uid_input['value'] if uid_input else ''
+    print('  Extracted user_id: ' + str(user_id))
+    print('  Login + session: SUCCESS')
+    return session, user_id
 
-def fetch_guillory_prices(session, csrf_token, account_number, days=90):
+def fetch_guillory_prices(session, user_id, account_number, days=90):
     today = datetime.date.today()
     start = today - datetime.timedelta(days=days)
     date_start = start.strftime('%m/%d/%Y')
@@ -105,7 +92,7 @@ def fetch_guillory_prices(session, csrf_token, account_number, days=90):
     payload = {
         'search': '1',
         'results': '9999',
-        'user_id': '',
+        'user_id': user_id,
         'account_number': account_number,
         'date_start': date_start,
         'date_end': date_end,
@@ -114,11 +101,7 @@ def fetch_guillory_prices(session, csrf_token, account_number, days=90):
         'terminal_id': '',
         'product_id': '',
     }
-    if csrf_token:
-        payload['csrf_token'] = csrf_token
 
-    # POST with Referer set to the price-history page (same-origin)
-    # Do NOT add X-Requested-With - keep as a normal form POST
     post_headers = {
         'Referer': GUILLORY_URL + '/account/price-history',
         'Content-Type': 'application/x-www-form-urlencoded',
@@ -129,73 +112,53 @@ def fetch_guillory_prices(session, csrf_token, account_number, days=90):
         data=payload,
         headers=post_headers
     )
-    print('  POST ' + account_number + ': status=' + str(r.status_code) + ', length=' + str(len(r.text)))
+    print('  POST ' + account_number + ': status=' + str(r.status_code) + ', len=' + str(len(r.text)))
 
-    is_login_page = ('login-container' in r.text or 'user_password' in r.text)
-    if is_login_page:
-        print('  Got login page for ' + account_number + ' - session expired')
+    is_login = ('login-container' in r.text or 'user_password' in r.text)
+    if is_login:
+        print('  Got login page - session expired for ' + account_number)
         return ''
 
-    print('  First 200 chars: ' + r.text[:200].replace('\n', ' '))
     return r.text
 
 def parse_guillory_html(html):
     if not html:
         return {}
 
-    # Strategy 1: DataTable single-quote 'data': [[...]]
-    m = re.search(r"'data':\s*(\[\[.*?\]\])", html, re.DOTALL)
-    if m:
-        print('  Matched: single-quote DataTable')
-        try:
-            return _rows_to_result(json.loads(m.group(1)))
-        except Exception as e:
-            print('  Error: ' + str(e))
-
-    # Strategy 2: DataTable double-quote "data": [[...]]
-    m = re.search(r'"data":\s*(\[\[.*?\]\])', html, re.DOTALL)
-    if m:
-        print('  Matched: double-quote DataTable')
-        try:
-            return _rows_to_result(json.loads(m.group(1)))
-        except Exception as e:
-            print('  Error: ' + str(e))
-
-    # Strategy 3: Array of arrays with date as first element
-    m = re.search(r'(\[\s*\[\s*"\d{1,2}/\d{1,2}/\d{4}".*?\]\s*\])', html, re.DOTALL)
-    if m:
-        print('  Matched: array with date pattern')
-        try:
-            return _rows_to_result(json.loads(m.group(1)))
-        except Exception as e:
-            print('  Error: ' + str(e))
-
-    # Strategy 4: HTML table
+    # The Guillory site uses a server-rendered HTML table with DataTables
+    # Columns: Date | Time | Product | Base | Surcharge | Taxes | Total | Change
     soup = BeautifulSoup(html, 'html.parser')
     tables = soup.find_all('table')
     if tables:
-        print('  Trying HTML tables: ' + str(len(tables)) + ' found')
+        print('  Found ' + str(len(tables)) + ' table(s), parsing...')
         result = _tables_to_result(tables)
         if result:
+            print('  Table parse success: ' + str(len(result)) + ' dates')
             return result
 
-    # Strategy 5: pure JSON
-    try:
-        data = json.loads(html)
-        print('  Matched: pure JSON')
-        if isinstance(data, list):
-            return _objects_to_result(data)
-        if isinstance(data, dict):
-            for key in ('data', 'prices', 'results', 'rows'):
-                if key in data and isinstance(data[key], list):
-                    return _objects_to_result(data[key])
-    except Exception:
-        pass
+    # Fallback: DataTable single-quote JS pattern
+    m = re.search(r"'data':\s*(\[\[.*?\]\])", html, re.DOTALL)
+    if m:
+        print('  Matched single-quote DataTable')
+        try:
+            return _rows_to_result(json.loads(m.group(1)))
+        except Exception as e:
+            print('  Error: ' + str(e))
 
-    print('  No data pattern matched. First 600 chars: ' + html[:600])
+    # Fallback: DataTable double-quote JS pattern
+    m = re.search(r'"data":\s*(\[\[.*?\]\])', html, re.DOTALL)
+    if m:
+        print('  Matched double-quote DataTable')
+        try:
+            return _rows_to_result(json.loads(m.group(1)))
+        except Exception as e:
+            print('  Error: ' + str(e))
+
+    print('  No data found. First 600 chars: ' + html[:600])
     return {}
 
 def _rows_to_result(data):
+    # Columns: [date, time, loc_id, loc_name, prod_id, product, base, surcharge, taxes, total, change]
     result = {}
     for row in data:
         try:
@@ -214,36 +177,8 @@ def _rows_to_result(data):
             print('  Row error: ' + str(e))
     return result
 
-def _objects_to_result(data):
-    result = {}
-    for obj in data:
-        try:
-            date_raw = obj.get('date') or obj.get('Date') or obj.get('price_date') or ''
-            product = obj.get('product') or obj.get('Product') or obj.get('product_name') or ''
-            total = float(obj.get('total') or obj.get('price') or obj.get('Total') or 0)
-            if not date_raw:
-                continue
-            d = None
-            for fmt in ('%m/%d/%Y', '%Y-%m-%d', '%m-%d-%Y'):
-                try:
-                    d = datetime.datetime.strptime(date_raw, fmt).date()
-                    break
-                except Exception:
-                    pass
-            if not d:
-                continue
-            date_str = d.isoformat()
-            prod_key = GUILLORY_PRODUCTS.get(product.upper())
-            if not prod_key:
-                continue
-            if date_str not in result:
-                result[date_str] = {}
-            result[date_str][prod_key] = total
-        except Exception as e:
-            print('  Object error: ' + str(e))
-    return result
-
 def _tables_to_result(tables):
+    # Table columns (from live inspection): Date | Time | Product | Base | Surcharge | Taxes | Total | Change
     result = {}
     for table in tables:
         rows = table.find_all('tr')
@@ -251,19 +186,35 @@ def _tables_to_result(tables):
             continue
         headers = [th.get_text(strip=True).lower() for th in rows[0].find_all(['th', 'td'])]
         print('  Table headers: ' + str(headers))
-        date_idx = next((i for i, h in enumerate(headers) if 'date' in h), None)
+
+        # Find column indices by header name
+        date_idx = next((i for i, h in enumerate(headers) if 'date' in h or 'eff' in h), None)
         prod_idx = next((i for i, h in enumerate(headers) if 'product' in h), None)
-        total_idx = next((i for i, h in enumerate(headers) if 'total' in h or 'price' in h), None)
+        # Total is 7th column (index 6) in this table: Date|Time|Product|Base|Surcharge|Taxes|Total|Change
+        total_idx = next((i for i, h in enumerate(headers) if 'total' in h), None)
+
         if date_idx is None or prod_idx is None or total_idx is None:
-            continue
-        for row in rows[1:]:
+            # Try fixed column positions (Date=0, Product=2, Total=6)
+            if len(headers) >= 7:
+                date_idx = 0
+                prod_idx = 2
+                total_idx = 6
+                print('  Using fixed column positions: date=0, prod=2, total=6')
+            else:
+                print('  Cannot determine columns from headers: ' + str(headers))
+                continue
+
+        data_rows = rows[1:]
+        print('  Parsing ' + str(len(data_rows)) + ' data rows')
+        for row in data_rows:
             cells = [td.get_text(strip=True) for td in row.find_all('td')]
             if len(cells) <= max(date_idx, prod_idx, total_idx):
                 continue
             try:
                 date_raw = cells[date_idx]
                 product = cells[prod_idx].upper()
-                total = float(cells[total_idx].replace('$', '').replace(',', ''))
+                total_str = cells[total_idx].replace('$', '').replace(',', '').strip()
+                total = float(total_str)
                 d = datetime.datetime.strptime(date_raw, '%m/%d/%Y').date()
                 date_str = d.isoformat()
                 prod_key = GUILLORY_PRODUCTS.get(product)
@@ -273,16 +224,16 @@ def _tables_to_result(tables):
                     result[date_str] = {}
                 result[date_str][prod_key] = total
             except Exception as e:
-                print('  Table row error: ' + str(e))
+                print('  Table row error: ' + str(e) + ' cells=' + str(cells[:4]))
     return result
 
 def fetch_all_guillory():
-    session, csrf_token = guillory_login()
+    session, user_id = guillory_login()
     all_data = {}
     for account_number, store_key in GUILLORY_STORES.items():
         print('  Fetching ' + store_key + ' (' + account_number + ')...')
         try:
-            html = fetch_guillory_prices(session, csrf_token, account_number)
+            html = fetch_guillory_prices(session, user_id, account_number)
             prices = parse_guillory_html(html)
             print('  Got ' + str(len(prices)) + ' dates for ' + store_key)
             for date_str, prods in prices.items():
