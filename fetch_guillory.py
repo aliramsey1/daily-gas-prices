@@ -27,38 +27,21 @@ GUILLORY_PRODUCTS = {
     'ULTRA L/S CLEAR DIESEL FUEL': 'die',
 }
 
-def decode_response(response):
-    """Decode a requests response, handling gzip manually if needed."""
-    # requests usually handles gzip automatically via urllib3
-    # but the .text property may fail if encoding detection is wrong
-    # Try the standard way first
-    try:
-        text = response.text
-        # Validate it looks like HTML (not binary garbage)
-        if text and (text.startswith('<') or '<!DOCTYPE' in text[:100] or '<html' in text[:200]):
-            return text
-    except Exception:
-        pass
 
-    # Try manual gzip decompression
+def decode_html(response):
+    """Decode response to HTML string, handling gzip if needed."""
     try:
         content = response.content
-        if content[:2] == b'\x1f\x8b':  # gzip magic bytes
-            decoded = gzip.decompress(content).decode('utf-8', errors='replace')
-            return decoded
+        if content[:2] == b'\x1f\x8b':
+            return gzip.decompress(content).decode('utf-8', errors='replace')
+        return content.decode('utf-8', errors='replace')
     except Exception:
-        pass
+        return response.text
 
-    # Last resort: decode raw bytes
-    try:
-        return response.content.decode('utf-8', errors='replace')
-    except Exception:
-        return ''
 
 def guillory_login():
-    """Log in and return (session, user_id) ready for price-history POSTs."""
+    """Log in and return (session, user_id). user_id extracted or defaults to '22'."""
     session = requests.Session()
-    # Use standard browser headers - let requests handle gzip naturally
     session.headers.update({
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -68,21 +51,20 @@ def guillory_login():
         'Upgrade-Insecure-Requests': '1',
     })
 
-    # GET login page
+    # Step 1: GET login page for CSRF token
     login_url = GUILLORY_URL + '/account/?login'
     r1 = session.get(login_url)
-    html1 = decode_response(r1)
+    html1 = decode_html(r1)
     print('  Step1 GET login: status=' + str(r1.status_code) + ', len=' + str(len(html1)))
-    print('  Is HTML: ' + str(html1.startswith('<') or '<!DOCTYPE' in html1[:100]))
 
-    soup = BeautifulSoup(html1, 'html.parser')
-    csrf_input = soup.find('input', {'name': 'csrf_token'})
+    soup1 = BeautifulSoup(html1, 'html.parser')
+    csrf_input = soup1.find('input', {'name': 'csrf_token'})
     csrf_value = csrf_input['value'] if csrf_input else ''
-    user_app_id_input = soup.find('input', {'name': 'user_app_id'})
+    user_app_id_input = soup1.find('input', {'name': 'user_app_id'})
     user_app_id_value = user_app_id_input['value'] if user_app_id_input else '0'
     print('  CSRF: ' + str(bool(csrf_value)) + ', user_app_id: ' + str(user_app_id_value))
 
-    # POST login
+    # Step 2: POST login credentials
     session.headers.update({'Referer': login_url, 'Origin': GUILLORY_URL})
     login_payload = {
         'user_app_id': user_app_id_value,
@@ -94,36 +76,39 @@ def guillory_login():
         'user_remember': 'on',
     }
     r2 = session.post(GUILLORY_URL + '/account/', data=login_payload, allow_redirects=True)
-    html2 = decode_response(r2)
+    html2 = decode_html(r2)
     print('  Step2 POST login: status=' + str(r2.status_code) + ', URL=' + str(r2.url) + ', len=' + str(len(html2)))
 
     logged_in = ('logout' in html2.lower() or 'price-history' in html2 or 'Account Summary' in html2)
     print('  Logged in indicator: ' + str(logged_in))
+    if not logged_in:
+        print('  ERROR: Login failed! Snippet: ' + html2[:200])
+        return session, '22'
 
-    # GET price-history page to confirm session + grab user_id
-    session.headers.update({'Referer': GUILLORY_URL + '/account/'})
-    r3 = session.get(GUILLORY_URL + '/account/price-history')
-    html3 = decode_response(r3)
-    print('  Step3 GET price-history: status=' + str(r3.status_code) + ', len=' + str(len(html3)))
-
-    is_login = ('login-container' in html3 or 'user_password' in html3)
-    print('  Step3 is login page: ' + str(is_login))
-
-    if is_login:
-        print('  ERROR: Session not persisting. Snippet: ' + html3[:200])
-        return session, ''
-
-    # Extract user_id from the hidden form field
-    soup3 = BeautifulSoup(html3, 'html.parser')
-    uid_input = soup3.find('input', {'name': 'user_id'})
+    # Extract user_id from the account page (it appears in the price-history form)
+    soup2 = BeautifulSoup(html2, 'html.parser')
+    uid_input = soup2.find('input', {'name': 'user_id'})
     user_id = uid_input['value'] if uid_input else ''
+    if not user_id:
+        # Try meta or data attributes
+        uid_meta = soup2.find(attrs={'name': 'user_id'})
+        user_id = uid_meta['value'] if uid_meta else '22'
     print('  user_id: "' + str(user_id) + '"')
-    print('  Login SUCCESS')
+    print('  Login SUCCESS - skipping Step3 GET to preserve session cookies')
     return session, user_id
 
+
 def fetch_guillory_prices(session, user_id, account_number, days=90):
+    """POST to price-history and return HTML response."""
     today = datetime.date.today()
     start = today - datetime.timedelta(days=days)
+
+    # Set referer to look like we came from the account page
+    session.headers.update({
+        'Referer': GUILLORY_URL + '/account/',
+        'Origin': GUILLORY_URL,
+    })
+
     payload = {
         'search': '1',
         'results': '9999',
@@ -136,24 +121,31 @@ def fetch_guillory_prices(session, user_id, account_number, days=90):
         'terminal_id': '',
         'product_id': '',
     }
-    post_headers = {
-        'Referer': GUILLORY_URL + '/account/price-history',
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Origin': GUILLORY_URL,
-    }
-    r = session.post(GUILLORY_URL + '/account/price-history', data=payload, headers=post_headers)
-    html = decode_response(r)
-    print('  POST ' + account_number + ': status=' + str(r.status_code) + ', len=' + str(len(html)))
 
+    r = session.post(
+        GUILLORY_URL + '/account/price-history',
+        data=payload,
+    )
+    html = decode_html(r)
+    print('  POST ' + account_number + ': status=' + str(r.status_code) + ', len=' + str(len(html)) + ', url=' + str(r.url))
+
+    # Check if we got the login page back
     is_login = ('login-container' in html or 'user_password' in html)
     if is_login:
-        print('  Got login page!')
+        print('  Got login page! Session expired.')
         return ''
+
+    # Show snippet for debugging
+    snippet = html[:150].replace('\n', ' ').replace('\r', '')
+    print('  HTML snippet: ' + snippet)
     return html
 
+
 def parse_guillory_html(html):
+    """Parse price-history HTML table into {date_str: {prod_key: price}}."""
     if not html:
         return {}
+
     soup = BeautifulSoup(html, 'html.parser')
     tables = soup.find_all('table')
     if tables:
@@ -161,8 +153,8 @@ def parse_guillory_html(html):
         if result:
             return result
 
-    # Fallback JS patterns
-    for pattern in [r"'data':\s*(\[\[.*?\]\])", r'"data":\s*(\[\[.*?\]\])']:
+    # Fallback: try JS data patterns
+    for pattern in [r"'data':\s*(\[\[.*?\]\])", r'"data":\s*(\[\[.*?\]\])']: 
         m = re.search(pattern, html, re.DOTALL)
         if m:
             try:
@@ -170,8 +162,11 @@ def parse_guillory_html(html):
             except Exception:
                 pass
 
-    print('  No data. Snippet: ' + html[:300].encode('ascii', errors='replace').decode())
+    print('  No data found. HTML length=' + str(len(html)))
+    snippet = html[:300].encode('ascii', errors='replace').decode()
+    print('  Snippet: ' + snippet)
     return {}
+
 
 def _rows_to_result(data):
     result = {}
@@ -189,6 +184,7 @@ def _rows_to_result(data):
             pass
     return result
 
+
 def _tables_to_result(tables):
     # Columns: Date(0) | Time(1) | Product(2) | Base(3) | Surcharge(4) | Taxes(5) | Total(6) | Change(7)
     result = {}
@@ -197,14 +193,11 @@ def _tables_to_result(tables):
         if len(rows) < 2:
             continue
         headers = [th.get_text(strip=True).lower() for th in rows[0].find_all(['th', 'td'])]
-
         date_idx = next((i for i, h in enumerate(headers) if 'date' in h or 'eff' in h), 0)
         prod_idx = next((i for i, h in enumerate(headers) if 'product' in h), 2)
         total_idx = next((i for i, h in enumerate(headers) if 'total' in h), 6)
-
         if len(headers) < 4:
             continue
-
         print('  Table: ' + str(len(rows)-1) + ' rows, headers=' + str(headers[:4]))
         parsed = 0
         for row in rows[1:]:
@@ -228,8 +221,10 @@ def _tables_to_result(tables):
             print('  Parsed ' + str(parsed) + ' records, ' + str(len(result)) + ' dates')
     return result
 
+
 def fetch_all_guillory():
     session, user_id = guillory_login()
+    print('  Using user_id: "' + str(user_id) + '"')
     all_data = {}
     for account_number, store_key in GUILLORY_STORES.items():
         print('  Fetching ' + store_key + ' (' + account_number + ')...')
@@ -245,6 +240,7 @@ def fetch_all_guillory():
             print('  Error ' + store_key + ': ' + str(e))
     return all_data
 
+
 def update_guillory_in_prices_json(guillory_data):
     prices_file = 'prices.json'
     if os.path.exists(prices_file):
@@ -252,6 +248,7 @@ def update_guillory_in_prices_json(guillory_data):
             existing = json.load(f)
     else:
         existing = {}
+
     added = 0
     for date_str, store_data in guillory_data.items():
         if date_str not in existing:
@@ -261,10 +258,12 @@ def update_guillory_in_prices_json(guillory_data):
                 existing[date_str][store_key] = prods
                 added += 1
                 print('  Added ' + date_str + ' ' + store_key)
+
     with open(prices_file, 'w') as f:
         json.dump(existing, f, indent=2, sort_keys=True)
     print('Guillory: ' + str(added) + ' new entries added')
     return existing
+
 
 def build_gd_js(prices_data):
     guillory_keys = set(GUILLORY_STORES.values())
@@ -282,6 +281,7 @@ def build_gd_js(prices_data):
     lines.append('};')
     return '\n'.join(lines)
 
+
 def update_gd_in_index_html(prices_data):
     gd_js = build_gd_js(prices_data)
     with open('index.html', 'r', encoding='utf-8') as f:
@@ -290,6 +290,7 @@ def update_gd_in_index_html(prices_data):
     with open('index.html', 'w', encoding='utf-8') as f:
         f.write(html)
     print('Updated var GD= in index.html')
+
 
 def main():
     print('Starting Guillory Oil price fetch...')
@@ -303,6 +304,7 @@ def main():
     prices_data = update_guillory_in_prices_json(guillory_data)
     update_gd_in_index_html(prices_data)
     print('Done!')
+
 
 if __name__ == '__main__':
     main()
