@@ -40,7 +40,7 @@ def decode_html(response):
 
 
 def guillory_login():
-    """Log in and return (session, user_id). user_id extracted or defaults to '22'."""
+    """Log in and return (session, user_id)."""
     session = requests.Session()
     session.headers.update({
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -56,6 +56,7 @@ def guillory_login():
     r1 = session.get(login_url)
     html1 = decode_html(r1)
     print('  Step1 GET login: status=' + str(r1.status_code) + ', len=' + str(len(html1)))
+    print('  Cookies after Step1: ' + str(list(session.cookies.keys())))
 
     soup1 = BeautifulSoup(html1, 'html.parser')
     csrf_input = soup1.find('input', {'name': 'csrf_token'})
@@ -64,7 +65,7 @@ def guillory_login():
     user_app_id_value = user_app_id_input['value'] if user_app_id_input else '0'
     print('  CSRF: ' + str(bool(csrf_value)) + ', user_app_id: ' + str(user_app_id_value))
 
-    # Step 2: POST login credentials
+    # Step 2: POST login WITHOUT following redirects to capture cookies
     session.headers.update({'Referer': login_url, 'Origin': GUILLORY_URL})
     login_payload = {
         'user_app_id': user_app_id_value,
@@ -75,9 +76,20 @@ def guillory_login():
         'user_password': GUILLORY_PASSWORD,
         'user_remember': 'on',
     }
-    r2 = session.post(GUILLORY_URL + '/account/', data=login_payload, allow_redirects=True)
+    r2_raw = session.post(GUILLORY_URL + '/account/', data=login_payload, allow_redirects=False)
+    print('  Step2a POST (no redirect): status=' + str(r2_raw.status_code) + ', location=' + str(r2_raw.headers.get('Location', 'none')))
+    print('  Cookies after Step2a: ' + str(list(session.cookies.keys())))
+    print('  Set-Cookie header: ' + str(r2_raw.headers.get('Set-Cookie', 'none')[:200]))
+
+    # Now follow the redirect manually
+    redirect_url = r2_raw.headers.get('Location', GUILLORY_URL + '/account/')
+    if not redirect_url.startswith('http'):
+        redirect_url = GUILLORY_URL + redirect_url
+    session.headers.update({'Referer': GUILLORY_URL + '/account/', 'Origin': GUILLORY_URL})
+    r2 = session.get(redirect_url)
     html2 = decode_html(r2)
-    print('  Step2 POST login: status=' + str(r2.status_code) + ', URL=' + str(r2.url) + ', len=' + str(len(html2)))
+    print('  Step2b GET redirect: status=' + str(r2.status_code) + ', url=' + str(r2.url) + ', len=' + str(len(html2)))
+    print('  Cookies after Step2b: ' + str(list(session.cookies.keys())))
 
     logged_in = ('logout' in html2.lower() or 'price-history' in html2 or 'Account Summary' in html2)
     print('  Logged in indicator: ' + str(logged_in))
@@ -85,16 +97,12 @@ def guillory_login():
         print('  ERROR: Login failed! Snippet: ' + html2[:200])
         return session, '22'
 
-    # Extract user_id from the account page (it appears in the price-history form)
+    # Extract user_id from the account page
     soup2 = BeautifulSoup(html2, 'html.parser')
     uid_input = soup2.find('input', {'name': 'user_id'})
-    user_id = uid_input['value'] if uid_input else ''
-    if not user_id:
-        # Try meta or data attributes
-        uid_meta = soup2.find(attrs={'name': 'user_id'})
-        user_id = uid_meta['value'] if uid_meta else '22'
+    user_id = uid_input['value'] if uid_input else '22'
     print('  user_id: "' + str(user_id) + '"')
-    print('  Login SUCCESS - skipping Step3 GET to preserve session cookies')
+    print('  Login SUCCESS')
     return session, user_id
 
 
@@ -102,12 +110,6 @@ def fetch_guillory_prices(session, user_id, account_number, days=90):
     """POST to price-history and return HTML response."""
     today = datetime.date.today()
     start = today - datetime.timedelta(days=days)
-
-    # Set referer to look like we came from the account page
-    session.headers.update({
-        'Referer': GUILLORY_URL + '/account/',
-        'Origin': GUILLORY_URL,
-    })
 
     payload = {
         'search': '1',
@@ -125,17 +127,22 @@ def fetch_guillory_prices(session, user_id, account_number, days=90):
     r = session.post(
         GUILLORY_URL + '/account/price-history',
         data=payload,
+        headers={
+            'Referer': GUILLORY_URL + '/account/',
+            'Origin': GUILLORY_URL,
+        },
     )
     html = decode_html(r)
     print('  POST ' + account_number + ': status=' + str(r.status_code) + ', len=' + str(len(html)) + ', url=' + str(r.url))
+    print('  Cookies when posting: ' + str(list(session.cookies.keys())))
 
     # Check if we got the login page back
     is_login = ('login-container' in html or 'user_password' in html)
     if is_login:
-        print('  Got login page! Session expired.')
+        print('  Got login page! Session lost.')
+        print('  Login snippet: ' + html[:150])
         return ''
 
-    # Show snippet for debugging
     snippet = html[:150].replace('\n', ' ').replace('\r', '')
     print('  HTML snippet: ' + snippet)
     return html
@@ -154,7 +161,7 @@ def parse_guillory_html(html):
             return result
 
     # Fallback: try JS data patterns
-    for pattern in [r"'data':\s*(\[\[.*?\]\])", r'"data":\s*(\[\[.*?\]\])']: 
+    for pattern in [r"'data':\s*(\[\[.*?\]\])", r'"data":\s*(\[\[.*?\]\])']:
         m = re.search(pattern, html, re.DOTALL)
         if m:
             try:
