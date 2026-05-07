@@ -10,7 +10,7 @@ GUILLORY_URL = 'https://www.guilloryoil.net'
 GUILLORY_USERNAME = os.environ.get('GUILLORY_USERNAME', '')
 GUILLORY_PASSWORD = os.environ.get('GUILLORY_PASSWORD', '')
 
-GUILLORY_STORES = {
+GUILLORY_STORES = {h
     '000002080': 'gw',
     '000002555': 'ge',
     '000005310': 'gr',
@@ -91,7 +91,7 @@ def guillory_login():
     has_login_form = ('user_password' in html2 or 'login-container' in html2)
     print('  has_logout=' + str(has_logout) + ', has_account_summary=' + str(has_account_summary) + ', has_login_form=' + str(has_login_form))
 
-    if has_login_form:
+    if has_login_form and not (has_logout or has_account_summary):
         # Login failed - check if there's an error message
         soup2 = BeautifulSoup(html2, 'html.parser')
         err = soup2.find(class_='alert-danger') or soup2.find(class_='error') or soup2.find(class_='alert')
