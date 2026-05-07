@@ -10,7 +10,7 @@ GUILLORY_URL = 'https://www.guilloryoil.net'
 GUILLORY_USERNAME = os.environ.get('GUILLORY_USERNAME', '')
 GUILLORY_PASSWORD = os.environ.get('GUILLORY_PASSWORD', '')
 
-GUILLORY_STORES = {h
+GUILLORY_STORES = {
     '000002080': 'gw',
     '000002555': 'ge',
     '000005310': 'gr',
