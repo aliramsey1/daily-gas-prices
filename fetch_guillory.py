@@ -117,7 +117,7 @@ def fetch_guillory_prices(session, user_id, account_number, days=90):
     payload = {
         'search': '1',
         'results': '9999',
-        'user_id': user_id,
+        'user_id': '',
         'account_number': account_number,
         'date_start': start.strftime('%m/%d/%Y'),
         'date_end': today.strftime('%m/%d/%Y'),
