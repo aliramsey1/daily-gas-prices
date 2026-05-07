@@ -136,7 +136,7 @@ def fetch_guillory_prices(session, user_id, account_number, days=90):
         },
     )
     html = decode_html(r)
-    print('  POST ' + account_number + ': status=' + str(r.status_code) + ', len=' + str(len(html)))
+    print('  POST ' + account_number + ': status=' + str(r.status_code) + ', final_url=' + str(r.url) + ', len=' + str(len(html)))
 
     # Check if we got the login page back
     is_login = ('login-container' in html or 'user_password' in html) and 'logout' not in html.lower()
