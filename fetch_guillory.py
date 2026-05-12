@@ -70,6 +70,7 @@ def guillory_login():
     print(' CSRF found: ' + str(bool(csrf_value)) + ', csrf_len=' + str(len(csrf_value)))
     print(' user_app_id: ' + str(user_app_id_value))
     print(' USERNAME set: ' + str(bool(GUILLORY_USERNAME)))
+    print(' USERNAME len=' + str(len(GUILLORY_USERNAME)) + ', val_start=' + repr(GUILLORY_USERNAME[:5]) + ', val_end=' + repr(GUILLORY_USERNAME[-5:]))
 
     # Step 2: POST login
     session.headers.update({'Referer': login_url, 'Origin': GUILLORY_URL})
@@ -106,6 +107,12 @@ def guillory_login():
                soup2.find(class_='alert'))
         err_text = err.get_text(strip=True)[:100] if err else 'no error msg found'
         print(' LOGIN FAILED. Error: ' + err_text)
+        # Print response snippet for debugging
+        snippet = html2[:500].encode('ascii', errors='replace').decode()
+        print(' RESP_SNIPPET: ' + snippet)
+        # Print response headers
+        resp_headers = dict(r2.headers)
+        print(' RESP_HEADERS: ' + str({k: v for k, v in resp_headers.items() if k.lower() in ['content-type','set-cookie','location','x-blocked','cf-ray']}))
         return None
 
     print(' Login SUCCESS (len=' + str(len(html2)) + ')')
