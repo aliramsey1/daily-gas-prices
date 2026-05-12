@@ -93,6 +93,12 @@ def guillory_login():
     has_account_summary = 'Account Summary' in html2
     print(' has_user_password=' + str(has_user_password) + ', has_logout=' + str(has_logout) + ', has_account_summary=' + str(has_account_summary))
 
+    # Debug: print soup title and password location
+    soup2_dbg = BeautifulSoup(html2, 'html.parser')
+    title_tag = soup2_dbg.find('title')
+    print(' Response title: ' + (title_tag.get_text() if title_tag else 'none'))
+    pw_idx = html2.find('user_password')
+    print(' user_password at index: ' + str(pw_idx) + ' | context: ' + html2[max(0,pw_idx-50):pw_idx+80].replace('\n', ' ')[:100])
     if has_user_password:
         soup2 = BeautifulSoup(html2, 'html.parser')
         err = (soup2.find(class_='alert-danger') or
